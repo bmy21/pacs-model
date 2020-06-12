@@ -158,6 +158,35 @@ def estimate_background(data, sigma_level = 3.0, tol = 1e-6, max_iter = 10):
     return rms
 
 
+def choose_psf(level, wav):
+    """Returns a path to one of four default PSFs based on processing level and wavelength."""
+
+    if wav == 70:
+        if level == 20:
+            name_psf = ('psf/gamma_dra_70/1342217404/level2/HPPPMAPB/'
+                        'hpacs1342217404_20hpppmapb_00_1469423089198.fits.gz')
+        elif level == 25:
+            name_psf = ('psf/gamma_dra_70/1342217404/level2_5/HPPHPFMAPB/'
+                        'hpacs_25HPPHPFMAPB_blue_1757_p5129_00_v1.0_1470980845846.fits.gz')
+        else:
+            raise Exception(f'No level {level} PSF is provided by default.')
+
+    elif wav == 100:
+        if level == 20:
+            name_psf = ('psf/gamma_dra_100/1342216069/level2/HPPPMAPB/'
+                        'hpacs1342216069_20hpppmapb_00_1469417766626.fits.gz')
+        elif level == 25:
+            name_psf = ('psf/gamma_dra_100/1342216069/level2_5/HPPHPFMAPB/'
+                        'hpacs_25HPPHPFMAPB_green_1757_p5129_00_v1.0_1470967312171.fits.gz')
+        else:
+            raise Exception(f'No level {level} PSF is provided by default.')
+
+    else:
+        raise Exception(f'No {wav} μm PSF is provided by default.')
+
+    return name_psf
+
+
 ### Functions used for disc model fitting ###
 
 def fix_model_params(params, include_unres):
@@ -318,9 +347,13 @@ def chi2(params, psf_hires, aupp, hires_scale, alpha, include_unres, stellarflux
     #force the disc to be at least a model pixel wide
     dr_pix = (r2 - r1) * np.cos(np.deg2rad(inc)) * (hires_scale / aupp)
 
+    #don't allow the disc to lie completely outside the image
+    rmax = min(image.shape) * aupp / np.sqrt(2)
+
     #disallow unphysical parameters
-    if (funres < 0 or ftot < 0 or r1 >= r2 or dr_pix <= 1 or r1 <= 0 or r2 <= 0
-        or inc < 0 or inc > 85 or abs(theta) > 90 or r2 > 1000):
+    if (funres < 0 or ftot < 0 or r1 > rmax or r2 > rmax
+        or r1 >= r2 or dr_pix <= 1 or r1 <= 0 or r2 <= 0
+        or inc < 0 or inc > 88 or abs(theta) > 90):
         return np.inf
 
     model = synthetic_obs(params, psf_hires, image.shape, aupp,
@@ -380,7 +413,7 @@ def consistent_gaussian(data):
 ### Functions used for plotting ###
 
 def standard_form(x, pos):
-    """Put x into a standard-form string; used for formatting colorbar labels."""
+    """Put x into a standard-form string; can be used for formatting axis labels."""
 
     #extract the mantissa and exponent
     a, b = (f'{x:.2e}'.split('e'))
@@ -413,13 +446,11 @@ def plot_image(ax, image, pfov, scale = 1, xlabel = True, ylabel = False, log = 
 
     ax.tick_params(direction = 'in', color = 'white', width = 1, right = True, top = True)
 
-    norm = colors.LogNorm(vmin = np.amin(image) * intensity_scale,
-                          vmax = np.amax(image) * intensity_scale) if log else None
-
     limits = get_limits(image, scale, pfov)
 
-    im = ax.imshow(image * intensity_scale, origin = 'lower',
-                   interpolation = 'none', cmap = cmap, norm = norm,
+    im = ax.imshow(np.log10(image * intensity_scale) if log else image * intensity_scale,
+                   origin = 'lower',
+                   interpolation = 'none', cmap = cmap,
                    extent = limits)
 
     #put an annotation at the top left corner
@@ -427,6 +458,8 @@ def plot_image(ax, image, pfov, scale = 1, xlabel = True, ylabel = False, log = 
                 verticalalignment = 'top', horizontalalignment = 'left')
 
     #add a scalebar if desired
+
+    #to do: automatically decide on an appropriate length for the scalebar
     if scalebar:
         if dist is None:
             warnings.warn("No distance provided to plot_image. Unable to plot a scale bar.",
@@ -455,24 +488,20 @@ def plot_image(ax, image, pfov, scale = 1, xlabel = True, ylabel = False, log = 
                         verticalalignment = 'center', horizontalalignment = 'left')
 
     #add a colorbar
-    cblabel = '$\mathregular{Intensity\ /\ (mJy\ arcsec^{-2})}$'
+    if ~log: cblabel = '$\mathregular{Intensity\ /\ (mJy\ arcsec^{-2})}$'
+    else: cblabel = '$\mathregular{log\ [\ Intensity\ /\ (mJy\ arcsec^{-2})\ ]}$'
 
     divider = make_axes_locatable(ax)
     cax = divider.append_axes('bottom', size = '5%', pad = 0.6)
     cb = plt.colorbar(im, cax = cax, orientation = 'horizontal')
     cb.set_label(cblabel)
 
-    cb.ax.xaxis.set_major_formatter(FuncFormatter(standard_form))
+    cb.ax.xaxis.set_major_formatter(FuncFormatter(lambda x , pos: f'{x:g}'))
     cb.ax.xaxis.set_minor_locator(plt.NullLocator())
-
-    #if log: cb.ax.xaxis.set_major_locator(LogLocator(base = 10 , subs = 'all'))
-    #else: cb.ax.xaxis.set_major_locator(MaxNLocator(nbins = 5))
-
     cb.ax.xaxis.set_major_locator(MaxNLocator(nbins = 5))
-    #if log: cb.ax.xaxis.set_major_formatter(FuncFormatter(log_format))
 
     #rotate labels to avoid overlap
-    plt.setp(cb.ax.xaxis.get_majorticklabels(), rotation = 25)
+    #plt.setp(cb.ax.xaxis.get_majorticklabels(), rotation = 25)
 
     #return the relevant AxesImage
     return im
@@ -608,11 +637,6 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
         #position angle of pointing
         image_angle = image_datafile[0].header['POSANGLE']
 
-
-    #error=fits.getdata(name_image,'error')
-    #plt.imshow(error)
-    #plt.show()
-
     #remove NaN pixels
     image_data[np.isnan(image_data)] = 0
 
@@ -643,53 +667,26 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
     cov_lower_bound = 0.6 * np.max(cov)
 
     #find the coordinates of the star, assuming it's at the brightest pixel within
-    #sky_separation_threshold arcsec of the image centre
-    sky_separation_threshold = 14
-    reference_indices = find_brightest(image_data, sky_separation_threshold, pfov)
+    #star_search_radius arcsec of the image centre
+    star_search_radius = 10
+    reference_indices = find_brightest(image_data, star_search_radius, pfov)
 
     #find stellocentric distance to each pixel, so that we can cut out the
     #star (& disc) for the purposes of calculating the rms flux
+    rms_sep_threshold = 15
     sky_separation = projected_sep_array(image_data.shape, reference_indices, pfov)
 
-
     #estimate the background rms flux
-    rms = estimate_background(image_data[(cov > cov_lower_bound) & (sky_separation > sky_separation_threshold)])
-
-    '''
-    fig,ax = plt.subplots()
-    ax.imshow(image_data, interpolation='none')
-    ax.contour(cov, levels=np.array([cov_lower_bound]))
-    ax.contour(sky_separation, levels=np.array([sky_separation_threshold]))
-    ax.contour(image_data, levels=np.array([2*rms, 3*rms]))
-    plt.show()
-    '''
+    rms = estimate_background(image_data[(cov > cov_lower_bound) & (sky_separation > rms_sep_threshold)])
 
     #only interested in the star (& disc) at the centre of the image,
     #so cut out that part to save time
     img_boxscale = 13 #recall that the cutout will have dimension (2 * img_boxscale + 1)
     image_data = crop_image(image_data, reference_indices, img_boxscale)
 
-    #if no PSF is provided, use one of
+    #if no PSF is provided, select one based on the processing level and wavelength
     if name_psf == '':
-        if wav == 70:
-            if level == 20:
-                name_psf = ('psf/gamma_dra_70/1342217404/level2/HPPPMAPB/'
-                            'hpacs1342217404_20hpppmapb_00_1469423089198.fits.gz')
-            elif level == 25:
-                name_psf = ('psf/gamma_dra_70/1342217404/level2_5/HPPHPFMAPB/'
-                            'hpacs_25HPPHPFMAPB_blue_1757_p5129_00_v1.0_1470980845846.fits.gz')
-            else:
-                raise Exception(f'No level {level} PSF is provided by default.')
-
-        elif wav == 100:
-            if level == 20:
-                name_psf = ('psf/gamma_dra_100/1342216069/level2/HPPPMAPB/'
-                            'hpacs1342216069_20hpppmapb_00_1469417766626.fits.gz')
-            elif level == 25:
-                name_psf = ('psf/gamma_dra_100/1342216069/level2_5/HPPHPFMAPB/'
-                            'hpacs_25HPPHPFMAPB_green_1757_p5129_00_v1.0_1470967312171.fits.gz')
-            else:
-                raise Exception(f'No level {level} PSF is provided by default.')
+        name_psf = choose_psf(level, wav)
 
 
     #load in the PSF
@@ -698,7 +695,6 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
         psf_pfov = psf_datafile[1].header['CDELT2'] * 3600
         psf_wav = int(psf_datafile[0].header['WAVELNTH'])
         psf_angle =  psf_datafile[0].header['POSANGLE']
-
 
     psf_data[np.isnan(psf_data)] = 0
 
@@ -717,7 +713,7 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
     psf_boxscale = img_boxscale
     angle = psf_angle - image_angle
     psf_data = rotate(psf_data, angle)
-    psf_data = crop_image(psf_data, find_brightest(psf_data, sky_separation_threshold, pfov), psf_boxscale)
+    psf_data = crop_image(psf_data, find_brightest(psf_data, star_search_radius, pfov), psf_boxscale)
     psf_data /= np.sum(psf_data)
 
     #rebin PSF to pixel scale of high-resolution model, then re-normalize
@@ -729,35 +725,6 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
         shutil.rmtree(savepath)
 
     os.makedirs(savepath)
-
-
-    #######################################################
-    '''
-    ptest=[100, 100, 0, 0, 200, 300, 0, 40]
-    print(np.unravel_index(image_data.argmax(), image_data.shape))
-    print(np.unravel_index(psf_data.argmax(), psf_data.shape))
-    model_unconvolved = model_hires(ptest, image_data.shape,
-                                    np.unravel_index(image_data.argmax(), image_data.shape),
-                                    aupp, hires_scale, alpha, include_unres, stellarflux,
-                                    flux_factor, include_central = True)
-
-    model_unconvolved[model_unconvolved <= 0] = np.amin(model_unconvolved[model_unconvolved > 0]) / 2
-    fig,ax=plt.subplots()
-    plot_image(ax, model_unconvolved, pfov, scale = hires_scale, annotation = 'High-resolution model',
-               log = True, scalebar = True, dist = dist)
-    #plt.pcolormesh(np.log10(model_unconvolved), edgecolors='w',linewidth = 0.25)
-    plt.show()
-
-    model_unconvolved = distance_array(ptest, image_data.shape,
-                                    np.unravel_index(image_data.argmax(), image_data.shape),
-                                    aupp, hires_scale, include_unres)
-
-    fig,ax=plt.subplots()
-    plot_image(ax, model_unconvolved, pfov, scale = hires_scale, annotation = 'Distance array',
-               log = False, scalebar = True, dist = dist)
-    plt.show()
-    '''
-    #######################################################
 
 
     #if requested, first check whether the image is consistent with a PSF and skip the fit if possible
@@ -800,9 +767,16 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
     #global minimum within the parameter ranges specified by the arguments.
     #format is [<funres,> ftot, x0, y0, r1, r2, inc, theta]
 
-    #NOTE: to do - parametrize the limits on r1, r2 and inc.
-    search_space = [(0, 10000), (0, 10000), (-300, 300), (-300, 300),
-                    (5, 1000), (5, 1000), (0, 85), (0, 180)]
+    #keep the disc largely within the image box
+    rmax = min(image_data.shape) * aupp / np.sqrt(2)
+
+    #keep the disc's centre relative close to that of the image
+    shiftmax = min(image_data.shape) * aupp / 4
+
+    fmax = 10000 #i.e. 10Jy
+
+    search_space = [(0, fmax), (0, fmax), (-shiftmax, shiftmax), (-shiftmax, shiftmax),
+                    (0, rmax), (0, rmax), (0, 88), (-90, 90)]
 
     pnames = [r'$F_\mathrm{unres}\ /\ \mathrm{mJy}$', r'$F_\mathrm{res}\ /\ \mathrm{mJy}$',
               r'$x_0\ /\ \mathrm{au}$', r'$y_0\ /\ \mathrm{au}$',
