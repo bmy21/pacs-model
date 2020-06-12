@@ -20,14 +20,6 @@ import os
 import shutil
 
 
-#a few PSF files we might want to try out later...
-#name_psf='calibstar/1342182988/level2/HPPPMAPB/hpacs1342182988_20hpppmapb_00_1469207572390.fits.gz'
-# psf1
-#name_psf='calibstar/1342217404/level2_5/HPPHPFMAPB/hpacs_25HPPHPFMAPB_blue_1757_p5129_00_v1.0_1470980845846.fits.gz'
-# psf2
-#name_psf='calibstar/1342191959/level2_5/HPPHPFMAPB/hpacs_25HPPHPFMAPB_blue_1757_p5129_00_v1.0_1470609127545.fits.gz''
-
-
 ### Functions used during initial setup ###
 
 def correlated_noise_factor(natural, pfov):
@@ -472,7 +464,12 @@ def plot_image(ax, image, pfov, scale = 1, xlabel = True, ylabel = False, log = 
 
     cb.ax.xaxis.set_major_formatter(FuncFormatter(standard_form))
     cb.ax.xaxis.set_minor_locator(plt.NullLocator())
-    if log: cb.ax.xaxis.set_major_locator(LogLocator(base = 2))
+
+    #if log: cb.ax.xaxis.set_major_locator(LogLocator(base = 10 , subs = 'all'))
+    #else: cb.ax.xaxis.set_major_locator(MaxNLocator(nbins = 5))
+
+    cb.ax.xaxis.set_major_locator(MaxNLocator(nbins = 5))
+    #if log: cb.ax.xaxis.set_major_formatter(FuncFormatter(log_format))
 
     #rotate labels to avoid overlap
     plt.setp(cb.ax.xaxis.get_majorticklabels(), rotation = 25)
@@ -529,7 +526,7 @@ def parse_args():
                         help = 'path to FITS file containing image to fit', required = True)
     parser.add_argument('-p', dest = 'psf', metavar = 'psf_file',
                         help = 'path to FITS file containing image to use as PSF',
-                        default = 'calibstar/1342217404/level2_5/HPPHPFMAPB/hpacs_25HPPHPFMAPB_blue_1757_p5129_00_v1.0_1470980845846.fits.gz')
+                        default = '')
     parser.add_argument('-d', dest = 'dist', type = float, metavar = 'distance',
                         help = 'distance to star in pc', required = True)
     parser.add_argument('-f', dest = 'fstar', type = float, metavar = 'stellar_flux',
@@ -587,7 +584,7 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
         alpha, include_unres, hires_scale, savepath, name, test):
     """Fit one image and save the output."""
 
-    #load in image file and extract pixel scale
+    #load in image file and extract some important data
     with fits.open(name_image) as image_datafile:
         #extract image from FITS file
         image_data = image_datafile[1].data * 1000 #convert to mJy/pixel
@@ -595,27 +592,40 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
         pfov = image_datafile[1].header['CDELT2'] * 3600 #pixel FOV in arcsec
         wav = int(image_datafile[0].header['WAVELNTH']) #wavelength of observations
 
-        #extract the obsid
-        obsid = image_datafile[0].header['OBSID001']
+        #processing level
+        level = int(image_datafile[0].header['LEVEL'])
+
+        #extract the obsid; the appropriate keyword depends on the processing level
+        try:
+            obsid = image_datafile[0].header['OBSID001'] #this works for level 2.5
+        except KeyError:
+            obsid = image_datafile[0].header['OBS_ID'] #and this for level 2
 
         #if a star name wasn't provided, use the target name from the observation header
         if name == '':
             name = image_datafile[0].header['OBJECT']
 
+        #position angle of pointing
         image_angle = image_datafile[0].header['POSANGLE']
 
+
+    #error=fits.getdata(name_image,'error')
+    #plt.imshow(error)
+    #plt.show()
+
+    #remove NaN pixels
     image_data[np.isnan(image_data)] = 0
 
-    aupp = pfov * dist #au per pixel
+    #au per pixel
+    aupp = pfov * dist
 
     #factors to correct for flux lost during high-pass filtering (see Kennedy et al. 2012)
     if wav == 70:
         flux_factor = 1.16
     elif wav == 100:
         flux_factor = 1.19
-
-    #refuse to fit 160 micron data (70/100 is always available and generally at higher S/N)
     else:
+        #refuse to fit 160 micron data (70/100 is always available and generally at higher S/N)
         raise Exception("Please provide a 70 or 100 micron image.")
 
     #put the star name, obsid and wavelength together into an annotation for the image plot
@@ -654,11 +664,33 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
     plt.show()
     '''
 
-
     #only interested in the star (& disc) at the centre of the image,
     #so cut out that part to save time
     img_boxscale = 13 #recall that the cutout will have dimension (2 * img_boxscale + 1)
     image_data = crop_image(image_data, reference_indices, img_boxscale)
+
+    #if no PSF is provided, use one of
+    if name_psf == '':
+        if wav == 70:
+            if level == 20:
+                name_psf = ('psf/gamma_dra_70/1342217404/level2/HPPPMAPB/'
+                            'hpacs1342217404_20hpppmapb_00_1469423089198.fits.gz')
+            elif level == 25:
+                name_psf = ('psf/gamma_dra_70/1342217404/level2_5/HPPHPFMAPB/'
+                            'hpacs_25HPPHPFMAPB_blue_1757_p5129_00_v1.0_1470980845846.fits.gz')
+            else:
+                raise Exception(f'No level {level} PSF is provided by default.')
+
+        elif wav == 100:
+            if level == 20:
+                name_psf = ('psf/gamma_dra_100/1342216069/level2/HPPPMAPB/'
+                            'hpacs1342216069_20hpppmapb_00_1469417766626.fits.gz')
+            elif level == 25:
+                name_psf = ('psf/gamma_dra_100/1342216069/level2_5/HPPHPFMAPB/'
+                            'hpacs_25HPPHPFMAPB_green_1757_p5129_00_v1.0_1470967312171.fits.gz')
+            else:
+                raise Exception(f'No level {level} PSF is provided by default.')
+
 
     #load in the PSF
     with fits.open(name_psf) as psf_datafile:
@@ -892,9 +924,12 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
     plot_contours(ax[1], psfsub, pfov, rms)
 
     #now the high-res model; set zero pixels to small amount (half the smallest pixel) as plotting on log scale
-    model_unconvolved[model_unconvolved <= 0] = np.amin(model_unconvolved[model_unconvolved > 0]) / 2
+    nonzero_flux = np.sum(model_unconvolved) > 0
+    if nonzero_flux:
+        model_unconvolved[model_unconvolved <= 0] = np.amin(model_unconvolved[model_unconvolved > 0]) / 2
+
     plot_image(ax[2], model_unconvolved, pfov, scale = hires_scale, annotation = 'High-resolution model',
-               log = True, scalebar = True, dist = dist)
+               log = nonzero_flux, scalebar = True, dist = dist)
 
     #finally, the mopdel residuals
     plot_image(ax[3], residual, pfov, annotation = 'Residuals')
@@ -924,4 +959,3 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
 
 if __name__ == "__main__":
     run(*parse_args())
-    

@@ -14,16 +14,15 @@ csv_filename = 'input/obs_path_list.csv'
 df_in = pd.read_csv(csv_filename)
 
 for row in df_in.itertuples():
-    print(row.Index)
+    #print(row.Index)
 
     #note: why doesn't AU Mic work?
-    if row.xid == "GJ 3634":
+    if row.xid=="HD 82106": #row.xid == "GJ 3634": #48370
 
         print(row.path)
 
         try:
-            pacs_model.run(20, 20, 10, row.path,
-            'calibstar/1342217404/level2_5/HPPHPFMAPB/hpacs_25HPPHPFMAPB_blue_1757_p5129_00_v1.0_1470980845846.fits.gz',
+            pacs_model.run(20, 20, 10, row.path, '',
             row.dist_pc, row.star_mjy, 1.5, True,
             5, f'../batch_results/{row.obsid}', row.xid, True)
 
