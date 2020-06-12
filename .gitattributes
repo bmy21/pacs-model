@@ -1,2 +1,2 @@
 # stop this repo from being classified as jupyter notebook rather than python
-*.ipynb linguist-documentation
+*.ipynb linguist-language=Python
