@@ -347,8 +347,9 @@ def chi2(params, psf_hires, aupp, hires_scale, alpha, include_unres, stellarflux
     #force the disc to be at least a model pixel wide
     dr_pix = (r2 - r1) * np.cos(np.deg2rad(inc)) * (hires_scale / aupp)
 
-    #don't allow the disc to lie completely outside the image
-    rmax = min(image.shape) * aupp / np.sqrt(2)
+    #keep the disc largely within the image box;
+    #also impose a physical limit of 2000 au (relevant for distant systems)
+    rmax = min(min(image.shape) * aupp / np.sqrt(2), 2000)
 
     #disallow unphysical parameters
     if (funres < 0 or ftot < 0 or r1 > rmax or r2 > rmax
@@ -368,19 +369,19 @@ def log_probability(params, *args):
     return -0.5 * chi2(params, *args)
 
 
-def shifted_psf(psf, offset, scale):
+def shifted_psf(psf, params):
     """Shift the provided PSF by offset and normalize its peak to scale."""
 
-    model = shift(psf, offset)
+    x0, y0, scale = params
+    model = shift(psf, [x0, y0])
+
     return model * scale / np.amax(model)
 
 
-def chi2_shifted_psf(offset, image, psf, uncert):
+def chi2_shifted_psf(params, image, psf, uncert):
     """Calculate the chi-squared value associated with a PSF-subtracted image."""
 
-    #only parameter to minimize over is the PSF offset
-    #always scale the PSF so that its peak intensity matches that of the image
-    model = shifted_psf(psf, offset, np.amax(image))
+    model = shifted_psf(psf, params)
 
     return np.sum(((image - model) / uncert)**2)
 
@@ -388,10 +389,10 @@ def chi2_shifted_psf(offset, image, psf, uncert):
 def best_psf_subtraction(image, psf, uncert, pix = 5):
     """Return the best-fitting PSF-subtracted image. The PSF may be offset by +/- pix pixels."""
 
-    result = differential_evolution(chi2_shifted_psf, [(-pix, pix), (-pix, pix)],
+    result = differential_evolution(chi2_shifted_psf, [(-pix, pix), (-pix, pix), (0, 2 * np.amax(image))],
                                     args = (image, psf, uncert))
 
-    return image - shifted_psf(psf, result['x'], np.amax(image))
+    return image - shifted_psf(psf, result['x'])
 
 
 def consistent_gaussian(data):
@@ -652,8 +653,8 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
         #refuse to fit 160 micron data (70/100 is always available and generally at higher S/N)
         raise Exception("Please provide a 70 or 100 micron image.")
 
-    #put the star name, obsid and wavelength together into an annotation for the image plot
-    annotation = '\n'.join([f'PACS {wav} μm image', f'obsid: {obsid}', name])
+    #put the star name, obsid/level and wavelength together into an annotation for the image plot
+    annotation = '\n'.join([f'{wav} μm image (level {(level/10):g})', f'obsid: {obsid}', name])
 
     #scale up uncertainties since noise is correlated
     natural_pixsize = 3.2 #for PACS 70/100 micron images
@@ -749,12 +750,13 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
 
             plt.tight_layout()
             fig.savefig(savepath + '/image_model.png', dpi = 150)
+            plt.show()
             plt.close(fig)
 
             #for consistency, save a pickle indicating that no disc was resolved
             save_params(savepath, False)
 
-            #plt.show()
+
 
             return
 
@@ -767,8 +769,9 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
     #global minimum within the parameter ranges specified by the arguments.
     #format is [<funres,> ftot, x0, y0, r1, r2, inc, theta]
 
-    #keep the disc largely within the image box
-    rmax = min(image_data.shape) * aupp / np.sqrt(2)
+    #keep the disc largely within the image box;
+    #also impose a physical limit of 2000 au (relevant for distant systems)
+    rmax = min(min(image_data.shape) * aupp / np.sqrt(2), 2000)
 
     #keep the disc's centre relative close to that of the image
     shiftmax = min(image_data.shape) * aupp / 4
@@ -875,7 +878,7 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
     upper_uncertainty = np.percentile(samples, 84, axis = 0) - median
 
 
-    # Now make a four-panel image: [data, psf subtraction, high-res max-likelihood model, residuals]
+    #now make a four-panel image: [data, psf subtraction, high-res max-likelihood model, residuals]
     print("Exporting image of best-fit model...")
 
     model = synthetic_obs(max_likelihood, psf_data_hires, image_data.shape,

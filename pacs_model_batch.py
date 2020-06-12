@@ -17,7 +17,7 @@ for row in df_in.itertuples():
     #print(row.Index)
 
     #note: why doesn't AU Mic work?
-    if row.xid == "* alf CrB": #row.xid == "GJ 3634": #48370
+    if row.xid == "V* AU Mic": #row.xid == "GJ 3634": #48370
 
         print(row.path)
 
