@@ -189,6 +189,34 @@ def choose_psf(level, wav):
 
 ### Functions used for disc model fitting ###
 
+def radius_limit(shape, aupp, phys = 2000):
+    """Return a sensible limit on the disc's outer radius in au."""
+
+    #make sure the disc doesn't lie entirely outside the image field of view;
+    #also impose a physical limit in au, which is 2000 by default
+    #(see e.g. Fig 3 of Hughes et al. 2018)
+    return min(min(shape) * aupp / np.sqrt(2), phys)
+
+
+def param_limits(shape, aupp):
+    """Return limits defining the box in which to optimize parameters.
+    The image shape must be supplied to make sure the disc doesn't lie
+    outside the image."""
+
+    rmax = radius_limit(shape, aupp) #in au
+
+    #keep the disc's offset within +/- 5 pixels of the model origin
+    shiftmax = 5 #in PACS pixels
+
+    fmax = 10000 #i.e. 10Jy, to be safe
+
+    #simple geometric model breaks down at 90 deg inclination, so limit to
+    #some high value < 90 deg for now
+    imax = 88
+
+    return fmax, shiftmax, rmax, imax
+
+
 def fix_model_params(params, include_unres):
     """If using a model with no unresolved flux, prepend a zero to the parameter array.
 
@@ -344,23 +372,26 @@ def chi2(params, psf_hires, aupp, hires_scale, alpha, include_unres, stellarflux
 
     funres, ftot, x0, y0, r1, r2, inc, theta = fix_model_params(params, include_unres)
 
+    _, shiftmax, rmax, imax = param_limits(image.shape, aupp)
+
+    #impose uniform priors within some ranges
+    #(note that the fluxes don't have an upper limit here)
+    if (funres < 0 or ftot < 0
+        or r1 <= 0 or r2 <= 0 or r1 > rmax or r2 > rmax
+        or inc < 0 or inc > imax
+        or abs(x0) > shiftmax * aupp or abs(y0) > shiftmax * aupp
+        or abs(theta) > 90):
+        return np.inf
+
     #force the disc to be at least a model pixel wide
     dr_pix = (r2 - r1) * np.cos(np.deg2rad(inc)) * (hires_scale / aupp)
-
-    #keep the disc largely within the image box;
-    #also impose a physical limit of 2000 au (relevant for distant systems)
-    rmax = min(min(image.shape) * aupp / np.sqrt(2), 2000)
-
-    #disallow unphysical parameters
-    if (funres < 0 or ftot < 0 or r1 > rmax or r2 > rmax
-        or r1 >= r2 or dr_pix <= 1 or r1 <= 0 or r2 <= 0
-        or inc < 0 or inc > 88 or abs(theta) > 90):
+    if (r1 >= r2 or dr_pix <= 1):
         return np.inf
 
     model = synthetic_obs(params, psf_hires, image.shape, aupp,
                           hires_scale, alpha, include_unres, stellarflux, flux_factor)
 
-    return np.sum(((image - model) / uncert)**2)
+    return np.sum(((image - model) / uncert) ** 2)
 
 
 def log_probability(params, *args):
@@ -370,7 +401,7 @@ def log_probability(params, *args):
 
 
 def shifted_psf(psf, params):
-    """Shift the provided PSF by offset and normalize its peak to scale."""
+    """Shift the provided PSF by offset (in pixels) and normalize its peak to scale."""
 
     x0, y0, scale = params
     model = shift(psf, [x0, y0])
@@ -383,14 +414,18 @@ def chi2_shifted_psf(params, image, psf, uncert):
 
     model = shifted_psf(psf, params)
 
-    return np.sum(((image - model) / uncert)**2)
+    return np.sum(((image - model) / uncert) ** 2)
 
 
-def best_psf_subtraction(image, psf, uncert, pix = 5):
-    """Return the best-fitting PSF-subtracted image. The PSF may be offset by +/- pix pixels."""
+def best_psf_subtraction(image, psf, uncert):
+    """Return the best-fitting PSF-subtracted image."""
 
-    result = differential_evolution(chi2_shifted_psf, [(-pix, pix), (-pix, pix), (0, 2 * np.amax(image))],
-                                    args = (image, psf, uncert))
+    _, shiftmax, _, _ = param_limits(image.shape, 0)
+
+    #note that shiftmax here is in PACS pixels
+    limits = [(-shiftmax, shiftmax), (-shiftmax, shiftmax), (0, 2 * np.amax(image))]
+
+    result = differential_evolution(chi2_shifted_psf, limits, args = (image, psf, uncert))
 
     return image - shifted_psf(psf, result['x'])
 
@@ -718,7 +753,8 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
     psf_data /= np.sum(psf_data)
 
     #rebin PSF to pixel scale of high-resolution model, then re-normalize
-    psf_data_hires = congrid(psf_data, [i * hires_scale for i in psf_data.shape], method = 'linear', centre = False, minusone = True)
+    psf_data_hires = congrid(psf_data, [i * hires_scale for i in psf_data.shape],
+                             method = 'linear', centre = False, minusone = True)
     psf_data_hires /= np.sum(psf_data_hires)
 
     #before starting to save output, remove any old files
@@ -750,13 +786,11 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
 
             plt.tight_layout()
             fig.savefig(savepath + '/image_model.png', dpi = 150)
-            plt.show()
+            #plt.show()
             plt.close(fig)
 
             #for consistency, save a pickle indicating that no disc was resolved
             save_params(savepath, False)
-
-
 
             return
 
@@ -769,17 +803,10 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
     #global minimum within the parameter ranges specified by the arguments.
     #format is [<funres,> ftot, x0, y0, r1, r2, inc, theta]
 
-    #keep the disc largely within the image box;
-    #also impose a physical limit of 2000 au (relevant for distant systems)
-    rmax = min(min(image_data.shape) * aupp / np.sqrt(2), 2000)
-
-    #keep the disc's centre relative close to that of the image
-    shiftmax = min(image_data.shape) * aupp / 4
-
-    fmax = 10000 #i.e. 10Jy
-
+    fmax, shiftmax, rmax, imax = param_limits(image_data.shape, aupp)
+    shiftmax *= aupp
     search_space = [(0, fmax), (0, fmax), (-shiftmax, shiftmax), (-shiftmax, shiftmax),
-                    (0, rmax), (0, rmax), (0, 88), (-90, 90)]
+                    (0, rmax), (0, rmax), (0, imax), (-90, 90)]
 
     pnames = [r'$F_\mathrm{unres}\ /\ \mathrm{mJy}$', r'$F_\mathrm{res}\ /\ \mathrm{mJy}$',
               r'$x_0\ /\ \mathrm{au}$', r'$y_0\ /\ \mathrm{au}$',
@@ -908,13 +935,13 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
     plot_image(ax[2], model_unconvolved, pfov, scale = hires_scale, annotation = 'High-resolution model',
                log = nonzero_flux, scalebar = True, dist = dist)
 
-    #finally, the mopdel residuals
+    #finally, the model residuals
     plot_image(ax[3], residual, pfov, annotation = 'Residuals')
     plot_contours(ax[3], residual, pfov, rms)
 
     plt.tight_layout()
     fig.savefig(savepath + '/image_model.png', dpi = 150)
-    plt.show()
+    #plt.show()
     plt.close(fig)
 
 
