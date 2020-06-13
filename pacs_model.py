@@ -205,8 +205,8 @@ def param_limits(shape, aupp):
 
     rmax = radius_limit(shape, aupp) #in au
 
-    #keep the disc's offset within +/- 5 pixels of the model origin
-    shiftmax = 5 #in PACS pixels
+    #keep the disc's offset within +/- shiftmax pixels of the model origin
+    shiftmax = 4 #in PACS pixels
 
     fmax = 10000 #i.e. 10Jy, to be safe
 
@@ -259,7 +259,7 @@ def distance_array(params, shape, aupp, hires_scale, include_unres):
     """
 
 
-    funres, ftot, x0, y0, r1, r2, inc, theta = fix_model_params(params, include_unres)
+    funres, fres, x0, y0, r1, r2, inc, theta = fix_model_params(params, include_unres)
 
     dtr = np.pi / 180.0
 
@@ -305,7 +305,7 @@ def model_hires(params, shape, aupp, hires_scale, alpha, include_unres, stellarf
         Model flux on a grid of dimensions (shape * hires_scale), in mJy/pixel.
     """
 
-    funres, ftot, x0, y0, r1, r2, inc, theta = fix_model_params(params, include_unres)
+    funres, fres, x0, y0, r1, r2, inc, theta = fix_model_params(params, include_unres)
 
     #set disc flux based on d^(-alpha) profile
     d = distance_array(params, shape, aupp, hires_scale, include_unres)
@@ -315,7 +315,7 @@ def model_hires(params, shape, aupp, hires_scale, alpha, include_unres, stellarf
 
     #ensure we don't divide by zero (if there's no flux, we don't need to normalize anyway)
     if np.sum(flux) > 0:
-        flux = ftot * flux / np.sum(flux)
+        flux = fres * flux / np.sum(flux)
 
     #central pixel gets additional flux from star plus an optional component of unresolved flux
     if include_central:
@@ -370,13 +370,13 @@ def synthetic_obs(params, psf_hires, shape, aupp, hires_scale, alpha, include_un
 def chi2(params, psf_hires, aupp, hires_scale, alpha, include_unres, stellarflux, flux_factor, image, uncert):
     """Subtract model from image and calculate the chi-squared value, with uncertainties given by uncert."""
 
-    funres, ftot, x0, y0, r1, r2, inc, theta = fix_model_params(params, include_unres)
+    funres, fres, x0, y0, r1, r2, inc, theta = fix_model_params(params, include_unres)
 
     _, shiftmax, rmax, imax = param_limits(image.shape, aupp)
 
     #impose uniform priors within some ranges
     #(note that the fluxes don't have an upper limit here)
-    if (funres < 0 or ftot < 0
+    if (funres < 0 or fres < 0
         or r1 <= 0 or r2 <= 0 or r1 > rmax or r2 > rmax
         or inc < 0 or inc > imax
         or abs(x0) > shiftmax * aupp or abs(y0) > shiftmax * aupp
@@ -494,11 +494,15 @@ def plot_image(ax, image, pfov, scale = 1, xlabel = True, ylabel = False, log = 
                 verticalalignment = 'top', horizontalalignment = 'left')
 
     #add a scalebar if desired
-
-    #to do: automatically decide on an appropriate length for the scalebar
+    #to do: automatically decide on an appropriate length for the scalebar?
     if scalebar:
         if dist is None:
             warnings.warn("No distance provided to plot_image. Unable to plot a scale bar.",
+                          stacklevel = 2)
+        elif dist == 1:
+            #safe to assume that if dist = 1 is passed then the distance scale is
+            #arcsec, since there are no stars at <= 1 pc
+            warnings.warn("Skipping au scale bar as plot_image received dist = 1.",
                           stacklevel = 2)
 
         else:
@@ -536,9 +540,6 @@ def plot_image(ax, image, pfov, scale = 1, xlabel = True, ylabel = False, log = 
     cb.ax.xaxis.set_minor_locator(plt.NullLocator())
     cb.ax.xaxis.set_major_locator(MaxNLocator(nbins = 5))
 
-    #rotate labels to avoid overlap
-    #plt.setp(cb.ax.xaxis.get_majorticklabels(), rotation = 25)
-
     #return the relevant AxesImage
     return im
 
@@ -558,7 +559,7 @@ def plot_contours(ax, image, pfov, rms, scale = 1, levels = [-3, -2, 2, 3], neg_
 ### Main functions ###
 
 def save_params(savepath, resolved, include_unres = None, max_likelihood = None, median = None,
-                lower_uncertainty = None, upper_uncertainty = None, model_consistent = None):
+                lower_uncertainty = None, upper_uncertainty = None, model_consistent = None, in_au = None):
     """Save the main results of the fit in a pickle."""
 
     with open(savepath + '/params.pickle', 'wb') as file:
@@ -570,7 +571,8 @@ def save_params(savepath, resolved, include_unres = None, max_likelihood = None,
             "median": median,
             "lower_uncertainty": lower_uncertainty,
             "upper_uncertainty": upper_uncertainty,
-            "model_consistent": model_consistent
+            "model_consistent": model_consistent,
+            "in_au": in_au
         }
 
         pickle.dump(dict, file, protocol = pickle.HIGHEST_PROTOCOL)
@@ -578,39 +580,41 @@ def save_params(savepath, resolved, include_unres = None, max_likelihood = None,
     return
 
 def parse_args():
-    """Parse command-line arguments and return the results."""
+    """Parse command-line arguments and return the results as a tuple."""
 
-    parser = argparse.ArgumentParser(description = 'Fit a model to a resolved PACS image of a debris disc.',
+    parser = argparse.ArgumentParser(description = 'Fit a debris disc model to a Herschel PACS image.',
                                      formatter_class = argparse.RawDescriptionHelpFormatter)
 
-    parser.add_argument('-o', dest = 'output', metavar = 'output',
-                        help = 'directory in which to save the output', default = 'pacs_model/output/')
-    parser.add_argument('-n', dest = 'name', metavar = 'name',
-                        help = 'name of the star, used to annotate the output', default = '')
     parser.add_argument('-i', dest = 'img', metavar = 'image_file',
                         help = 'path to FITS file containing image to fit', required = True)
+    parser.add_argument('-o', dest = 'output', metavar = 'output',
+                        help = 'directory to place output (default ./pacs_model/output/)', default = 'pacs_model/output/')
+    parser.add_argument('-n', dest = 'name', metavar = 'name',
+                        help = 'name of the star, used as a figure annotation if supplied', default = '')
     parser.add_argument('-p', dest = 'psf', metavar = 'psf_file',
-                        help = 'path to FITS file containing image to use as PSF',
+                        help = 'optional path to FITS file containing image to use as PSF',
                         default = '')
     parser.add_argument('-d', dest = 'dist', type = float, metavar = 'distance',
-                        help = 'distance to star in pc', required = True)
+                        help = 'distance in pc (if not provided, disc scale will be in \'\')', default = np.nan)
     parser.add_argument('-f', dest = 'fstar', type = float, metavar = 'stellar_flux',
-                        help = 'stellar flux from synthetic photometry in mJy', required = True)
+                        help = 'stellar flux from synthetic photometry in mJy (default 0)', default = 0)
     parser.add_argument('-m', dest = 'model_scale', type = int, metavar = 'model_scale',
-                        help = 'scale of high-resolution model relative to PACS image', required = True)
+                        help = 'PACS pixel / high-res model pixel size ratio (default 5)', default = 5)
     parser.add_argument('-a', dest = 'alpha', type = float, metavar = 'alpha',
-                        help = 'power-law index of surface brightness profile (d^-alpha)',
+                        help = 'surface brightness profile index (d^-alpha; default 1.5)',
                         default = 1.5)
-    parser.add_argument('-w', dest = 'walkers', type = int, metavar = 'walkers',
-                        help = 'number of MCMC walkers', default = 200)
-    parser.add_argument('-s', dest = 'steps', type = int, metavar = 'steps',
-                        help = 'number of MCMC steps', default = 200)
-    parser.add_argument('-b', dest = 'burn', type = int, metavar = 'burn',
-                        help = 'number of MCMC steps to discard as burn-in', default = 100)
+    parser.add_argument('-s', dest = 'initial_steps', type = int, metavar = 'init_steps',
+                        help = 'number of steps for initial optimization (default 50)', default = 50)
+    parser.add_argument('-mw', dest = 'walkers', type = int, metavar = 'walkers',
+                        help = 'number of MCMC walkers (default 200)', default = 200)
+    parser.add_argument('-ms', dest = 'steps', type = int, metavar = 'steps',
+                        help = 'number of MCMC steps (default 700)', default = 700)
+    parser.add_argument('-mb', dest = 'burn', type = int, metavar = 'burn',
+                        help = 'number of MCMC steps to discard as burn-in (default 500)', default = 500)
     parser.add_argument('-u', dest = 'unres', action = 'store_true',
-                        help = 'include a component of unresolved flux in the model')
+                        help = 'if set, include a component of unresolved flux in the model')
     parser.add_argument('-t', dest = 'testres', action = 'store_true',
-                        help = 'test for a resolved disc and skip if apparently not present')
+                        help = 'if set, test whether the system appears consistent with a point source and skip disc fit if so')
 
     args = parser.parse_args()
 
@@ -629,6 +633,7 @@ def parse_args():
     name = args.name
 
     #model parameters
+    initial_steps = args.initial_steps
     alpha = args.alpha
     include_unres = args.unres
 
@@ -641,13 +646,30 @@ def parse_args():
     #should we use PSF subtraction to test for a resolved disc?
     test = args.testres
 
-    return (nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
-            alpha, include_unres, hires_scale, savepath, name, test)
+    return (name_image, name_psf, savepath, name, dist, stellarflux, hires_scale, alpha, include_unres,
+            initial_steps, nwalkers, nsteps, burn, test)
 
 
-def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
-        alpha, include_unres, hires_scale, savepath, name, test):
+def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', dist = np.nan,
+        stellarflux = 0, hires_scale = 5, alpha = 1.5, include_unres = True,
+        initial_steps = 50, nwalkers = 200, nsteps = 700, burn = 500, test = False):
     """Fit one image and save the output."""
+
+    #if given no stellar flux, force an unresolved component to be added
+    if stellarflux == 0 and ~include_unres:
+        include_unres = True
+        warnings.warn("No stellar flux was supplied; including an unresolved flux in the model.",
+                      stacklevel = 2)
+
+
+    #if no distance is supplied, simply set d = 1 pc so that r1, r2, x0 and y0 will be in arcseconds
+    sep_unit = r'\mathrm{au}'
+    in_au = True
+
+    if np.isnan(dist):
+        dist = 1
+        sep_unit = r'^{\prime\prime}'
+        in_au = False
 
     #load in image file and extract some important data
     with fits.open(name_image) as image_datafile:
@@ -801,7 +823,7 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
 
     #find best-fitting parameters using differential evolution, which searches for the
     #global minimum within the parameter ranges specified by the arguments.
-    #format is [<funres,> ftot, x0, y0, r1, r2, inc, theta]
+    #format is [<funres,> fres, x0, y0, r1, r2, inc, theta]
 
     fmax, shiftmax, rmax, imax = param_limits(image_data.shape, aupp)
     shiftmax *= aupp
@@ -809,8 +831,8 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
                     (0, rmax), (0, rmax), (0, imax), (-90, 90)]
 
     pnames = [r'$F_\mathrm{unres}\ /\ \mathrm{mJy}$', r'$F_\mathrm{res}\ /\ \mathrm{mJy}$',
-              r'$x_0\ /\ \mathrm{au}$', r'$y_0\ /\ \mathrm{au}$',
-              r'$r_1\ /\ \mathrm{au}$', r'$r_2\ /\ \mathrm{au}$',
+              fr'$x_0\ /\ {sep_unit}$', fr'$y_0\ /\ {sep_unit}$',
+              fr'$r_1\ /\ {sep_unit}$', fr'$r_2\ /\ {sep_unit}$',
               r'$i\ /\ \mathrm{deg}$', r'$\theta\ /\ \mathrm{deg}$'] #parameter names for plot labels
 
     #if we're not including an unresolved flux parameter, remove the first element
@@ -821,12 +843,13 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
         pnames[0] = r'$F_\mathrm{disc}\ /\ \mathrm{mJy}$'
 
     popsize = 20 #population size for differential evolution
-    maxiter = 50 #number of differential evolution iterations
+    maxiter = initial_steps #number of differential evolution iterations
 
     print("Finding a suitable initial model...")
 
     pbar = tqdm.tqdm(total = maxiter)
 
+    #set tol = 0 to ensure that DE runs for the prescribed number of steps & the progress bar works
     res = differential_evolution(chi2, search_space,
                                 (psf_data_hires,
                                 aupp, hires_scale, alpha, include_unres, stellarflux, flux_factor,
@@ -868,6 +891,8 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
     print("Exporting plot of MCMC chains...")
 
     #save a plot of the chains
+
+    #NOTE: to do - add the log-probability at the bottom
     fig, ax = plt.subplots(ndim, figsize = (12, 12), sharex = True)
     chain = sampler.get_chain()
 
@@ -941,7 +966,7 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
 
     plt.tight_layout()
     fig.savefig(savepath + '/image_model.png', dpi = 150)
-    #plt.show()
+    plt.show()
     plt.close(fig)
 
 
@@ -958,7 +983,7 @@ def run(nwalkers, nsteps, burn, name_image, name_psf, dist, stellarflux,
 
     #finally, save some important parameters in a pickle
     save_params(savepath, True, include_unres, max_likelihood, median, lower_uncertainty, upper_uncertainty,
-                is_noise)
+                is_noise, in_au)
 
 
 if __name__ == "__main__":
