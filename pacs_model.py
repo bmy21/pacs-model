@@ -510,7 +510,7 @@ def plot_image(ax, image, pfov, scale = 1, xlabel = True, ylabel = False, log = 
             scalebar_x = 0.05 #axis fraction
             scalebar_y = 0.95 #axis fraction
 
-            scalebar_arcsec = scalebar_au / (dist * pfov)
+            scalebar_arcsec = scalebar_au / dist
 
             #if an annotation was provided, plot at the bottom left instead
             if annotation != '':
