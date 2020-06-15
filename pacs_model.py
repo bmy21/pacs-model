@@ -976,7 +976,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     plot_contours(ax[1], psfsub, pfov, rms)
 
     #now the high-res model; set zero pixels to small amount (half the smallest pixel) as plotting on log scale,
-    #apart from the special case where there's no resolved flux at all
+    #apart from in the special case where there's no resolved flux at all
     nonzero_flux = np.sum(model_unconvolved) > 0
 
     if nonzero_flux:
