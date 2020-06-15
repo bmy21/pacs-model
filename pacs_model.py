@@ -221,7 +221,7 @@ def param_limits(shape, aupp):
 
     #simple geometric model breaks down at 90 deg inclination, so limit to
     #some high value < 90 deg for now
-    imax = 88
+    imax = 89
 
     return fmax, shiftmax, rmax, imax
 
@@ -611,13 +611,13 @@ def parse_args():
     parser.add_argument('-a', dest = 'alpha', type = float, metavar = 'alpha',
                         help = 'surface brightness profile index (d^-alpha; default 1.5)', default = 1.5)
     parser.add_argument('-s', dest = 'initial_steps', type = int, metavar = 'init_steps',
-                        help = 'number of steps for initial optimization (default 50)', default = 50)
+                        help = 'number of steps for initial optimization (default 100)', default = 100)
     parser.add_argument('-mw', dest = 'walkers', type = int, metavar = 'mcwalkers',
                         help = 'number of MCMC walkers (default 200)', default = 200)
     parser.add_argument('-ms', dest = 'steps', type = int, metavar = 'mcsteps',
-                        help = 'number of MCMC steps (default 700)', default = 700)
+                        help = 'number of MCMC steps (default 800)', default = 800)
     parser.add_argument('-mb', dest = 'burn', type = int, metavar = 'mcburn',
-                        help = 'number of MCMC steps to discard as burn-in (default 500)', default = 500)
+                        help = 'number of MCMC steps to discard as burn-in (default 600)', default = 600)
     parser.add_argument('-ra', dest = 'ra', type = float, metavar = 'ra',
                         help = 'target right ascension in degrees (optional)', default = np.nan)
     parser.add_argument('-de', dest = 'dec', type = float, metavar = 'dec',
@@ -665,7 +665,7 @@ def parse_args():
 
 def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', dist = np.nan,
         stellarflux = 0, hires_scale = 5, alpha = 1.5, include_unres = True,
-        initial_steps = 50, nwalkers = 200, nsteps = 700, burn = 500, ra = np.nan,
+        initial_steps = 100, nwalkers = 200, nsteps = 800, burn = 600, ra = np.nan,
         dec = np.nan, test = False):
     """Fit one image and save the output."""
 
@@ -914,24 +914,29 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     print("Exporting plot of MCMC chains...")
 
     #save a plot of the chains
-
-    #NOTE: to do - add the log-probability at the bottom
-    fig, ax = plt.subplots(ndim, figsize = (12, 12), sharex = True)
+    fig, ax = plt.subplots(ndim + 1, figsize = (12, 16))
     chain = sampler.get_chain()
 
+    #first plot the parameter chains
     for i in range(ndim):
         ax[i].plot(chain[:, :, i], c = 'k', alpha = 0.3)
-
-        #shade the burn-in period
-        ax[i].axvspan(0, burn - 0.5, alpha = 0.1, color = 'k')
-
-        ax[i].xaxis.set_major_locator(MaxNLocator(integer = True))
-        ax[i].set_xlim(0, nsteps - 1)
         ax[i].set_ylabel(pnames[i])
+        ax[i].xaxis.set_major_locator(plt.NullLocator())
 
+
+    #then the log-probability
+    ax[-1].plot(sampler.get_log_prob(), c = 'k', alpha = 0.3)
+    ax[-1].xaxis.set_major_locator(MaxNLocator(integer = True))
+    ax[-1].set_ylabel('log probability')
     ax[-1].set_xlabel('Step number')
 
-    plt.tight_layout()
+    #formatting common to all subplots
+    for i in range(ndim + 1):
+        ax[i].axvspan(0, burn - 0.5, alpha = 0.1, color = 'k')
+        ax[i].set_xlim(0, nsteps - 1)
+
+    #plt.subplots_adjust(hspace = 0.05)
+    plt.tight_layout(h_pad = 0.5)
     fig.savefig(savepath + '/chains.pdf')
     plt.close(fig)
 
@@ -939,7 +944,8 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     print("Exporting corner plot...")
 
     #make the corner plot
-    fig = corner.corner(samples, quantiles = [0.16, 0.84], labels = pnames, show_titles = True, title_fmt = '.1f')
+    fig = corner.corner(samples, quantiles = [0.16, 0.50, 0.84],
+                        labels = pnames, show_titles = True, title_fmt = '.1f')
     fig.savefig(savepath + '/corner.pdf')
     plt.close(fig)
 
@@ -983,6 +989,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
         model_unconvolved[model_unconvolved <= 0] = np.amin(model_unconvolved[model_unconvolved > 0]) / 2
 
     annotation_model = 'High-resolution model'
+    annotation_model += f'\nUnresolved component{" " if include_unres else " not "}included'
 
     if not in_au:
         annotation_model += f'\nNo distance{" or stellar flux " if stellarflux == 0 else " "}provided'
@@ -990,7 +997,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
         annotation_model += '\nNo stellar flux provided'
 
     plot_image(ax[2], model_unconvolved, pfov, scale = hires_scale, annotation = annotation_model,
-               log = nonzero_flux, scalebar = True, dist = dist)
+               log = nonzero_flux, scalebar = True, scalebar_au = 100 if dist < 1000 else 1000, dist = dist)
 
     #finally, the model residuals
     plot_image(ax[3], residual, pfov, annotation = 'Residuals')
