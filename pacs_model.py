@@ -1,9 +1,13 @@
-import argparse
-import numpy as np
+import matplotlib
+#the line below needs to be here so that matplotlib can save figures
+#without an X server running - e.g. if using ssh/tmux
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from matplotlib.ticker import LogLocator, MaxNLocator, FuncFormatter
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+import argparse
+import numpy as np
 from scipy.optimize import differential_evolution
 from scipy.ndimage.interpolation import shift, rotate
 from scipy.stats import anderson
@@ -568,25 +572,25 @@ def plot_contours(ax, image, pfov, rms, scale = 1, levels = [-3, -2, 2, 3], neg_
 def save_params(savepath, resolved, include_unres = None, max_likelihood = None, median = None,
                 lower_uncertainty = None, upper_uncertainty = None, model_consistent = None,
                 in_au = None, stellarflux = None):
-    """Save the main results of the fit in a pickle."""
+    """Save the main results of the fit in a pickle file."""
+
+    dict = {
+        "resolved": resolved,
+        "include_unres": include_unres,
+        "max_likelihood": max_likelihood,
+        "median": median,
+        "lower_uncertainty": lower_uncertainty,
+        "upper_uncertainty": upper_uncertainty,
+        "model_consistent": model_consistent,
+        "in_au": in_au,
+        "stellarflux": stellarflux
+    }
 
     with open(savepath + '/params.pickle', 'wb') as file:
-
-        dict = {
-            "resolved": resolved,
-            "include_unres": include_unres,
-            "max_likelihood": max_likelihood,
-            "median": median,
-            "lower_uncertainty": lower_uncertainty,
-            "upper_uncertainty": upper_uncertainty,
-            "model_consistent": model_consistent,
-            "in_au": in_au,
-            "stellarflux": stellarflux
-        }
-
         pickle.dump(dict, file, protocol = pickle.HIGHEST_PROTOCOL)
 
     return
+
 
 def parse_args():
     """Parse command-line arguments and return the results as a tuple."""
@@ -736,7 +740,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
         raise Exception("Please provide a 70 or 100 micron image.")
 
     #put the star name, obsid/level and wavelength together into an annotation for the image plot
-    annotation = '\n'.join([f'{wav} μm image (level {(level/10):g})', f'obsid: {obsid}', name])
+    annotation = '\n'.join([f'{wav} μm image (level {(level/10):g})', f'ObsID: {obsid}', name])
 
     #scale up uncertainties since noise is correlated
     natural_pixsize = 3.2 #for PACS 70/100 micron images
@@ -1005,7 +1009,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     plt.tight_layout()
     fig.savefig(savepath + '/image_model.png', dpi = 150)
-    plt.show()
+    #plt.show()
     plt.close(fig)
 
 
