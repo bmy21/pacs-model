@@ -21,10 +21,11 @@ for row in df_in.itertuples():
 
         try:
             pacs_model.run(row.path, savepath = f'../batch_results_1306/{row.obsid}',
-                           name = row.xid, dist = row.dist_pc, stellarflux = 0, #row.star_mjy,
+                           name = row.xid, dist = row.dist_pc, stellarflux = row.star_mjy,
                            hires_scale = 5, include_unres = True,
-                           initial_steps = 100,
-                           nwalkers = 20, nsteps = 50, burn = 30,
+                           initial_steps = 10,
+                           nwalkers = 20, nsteps = 30, burn = 20,
+                           ra = row.raj2000, dec = row.dej2000,
                            test = True)
 
         except Exception as e:

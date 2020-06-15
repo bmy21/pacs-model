@@ -9,6 +9,7 @@ from scipy.ndimage.interpolation import shift, rotate
 from scipy.stats import anderson
 from astropy.io import fits
 from astropy.convolution import convolve_fft
+from astropy.wcs import WCS
 import pickle
 import emcee
 import corner
@@ -68,8 +69,8 @@ def projected_sep_array(shape, centre, pfov):
     return pfov * np.sqrt(dx**2 + dy**2)
 
 
-def find_brightest(image, sky_separation_threshold, pfov):
-    """Find the brightest pixel within a specified distance of the centre of an image.
+def find_brightest(image, sky_separation_threshold, pfov, centre = None):
+    """Find the brightest pixel within a specified distance of some point in an image.
 
     Parameters
     ----------
@@ -79,6 +80,8 @@ def find_brightest(image, sky_separation_threshold, pfov):
         Radius of search region in arcsec.
     pfov : float
         Pixel scale of the image in arcsec.
+    centre : 2D tuple of ints, optional
+        Indices of centre of search region. If not provided, search around image centre.
 
     Returns
     -------
@@ -86,7 +89,13 @@ def find_brightest(image, sky_separation_threshold, pfov):
         Indices of the brightest pixel.
     """
 
-    sky_separation = projected_sep_array(image.shape, [i/2 for i in image.shape], pfov)
+    if centre is None: centre = [i/2 for i in image.shape]
+
+    #print(centre)
+    #print([i/2 for i in image.shape])
+    #input('...')
+
+    sky_separation = projected_sep_array(image.shape, centre, pfov)
     return np.unravel_index(np.ma.MaskedArray(image, sky_separation > sky_separation_threshold).argmax(),
                                               image.shape)
 
@@ -489,6 +498,7 @@ def plot_image(ax, image, pfov, scale = 1, xlabel = True, ylabel = False, log = 
                    interpolation = 'none', cmap = cmap,
                    extent = limits)
 
+
     #put an annotation at the top left corner
     ax.annotate(annotation, xy = (0.05, 0.95), xycoords = 'axes fraction', color = 'white',
                 verticalalignment = 'top', horizontalalignment = 'left')
@@ -499,22 +509,19 @@ def plot_image(ax, image, pfov, scale = 1, xlabel = True, ylabel = False, log = 
         if dist is None:
             warnings.warn("No distance provided to plot_image. Unable to plot a scale bar.",
                           stacklevel = 2)
+
         elif dist == 1:
             #safe to assume that if dist = 1 is passed then the distance scale is
-            #arcsec, since there are no stars at <= 1 pc
+            #arcsec, since there are no real stars at <= 1 pc
             warnings.warn("Skipping au scale bar as plot_image received dist = 1.",
                           stacklevel = 2)
 
         else:
-            #by default put the scalebar at the top left
+            #place scalebar at the lower left corner
             scalebar_x = 0.05 #axis fraction
-            scalebar_y = 0.95 #axis fraction
+            scalebar_y = 0.05 #axis fraction
 
             scalebar_arcsec = scalebar_au / dist
-
-            #if an annotation was provided, plot at the bottom left instead
-            if annotation != '':
-                scalebar_y = 0.05
 
             ax.plot([limits[0] + scalebar_x * (limits[1] - limits[0]),
                      limits[0] + scalebar_x * (limits[1] - limits[0]) - scalebar_arcsec],
@@ -528,7 +535,7 @@ def plot_image(ax, image, pfov, scale = 1, xlabel = True, ylabel = False, log = 
                         verticalalignment = 'center', horizontalalignment = 'left')
 
     #add a colorbar
-    if ~log: cblabel = '$\mathregular{Intensity\ /\ (mJy\ arcsec^{-2})}$'
+    if not log: cblabel = '$\mathregular{Intensity\ /\ (mJy\ arcsec^{-2})}$'
     else: cblabel = '$\mathregular{log\ [\ Intensity\ /\ (mJy\ arcsec^{-2})\ ]}$'
 
     divider = make_axes_locatable(ax)
@@ -559,7 +566,8 @@ def plot_contours(ax, image, pfov, rms, scale = 1, levels = [-3, -2, 2, 3], neg_
 ### Main functions ###
 
 def save_params(savepath, resolved, include_unres = None, max_likelihood = None, median = None,
-                lower_uncertainty = None, upper_uncertainty = None, model_consistent = None, in_au = None):
+                lower_uncertainty = None, upper_uncertainty = None, model_consistent = None,
+                in_au = None, stellarflux = None):
     """Save the main results of the fit in a pickle."""
 
     with open(savepath + '/params.pickle', 'wb') as file:
@@ -572,7 +580,8 @@ def save_params(savepath, resolved, include_unres = None, max_likelihood = None,
             "lower_uncertainty": lower_uncertainty,
             "upper_uncertainty": upper_uncertainty,
             "model_consistent": model_consistent,
-            "in_au": in_au
+            "in_au": in_au,
+            "stellarflux": stellarflux
         }
 
         pickle.dump(dict, file, protocol = pickle.HIGHEST_PROTOCOL)
@@ -592,8 +601,7 @@ def parse_args():
     parser.add_argument('-n', dest = 'name', metavar = 'name',
                         help = 'name of the star, used as a figure annotation if supplied', default = '')
     parser.add_argument('-p', dest = 'psf', metavar = 'psf_file',
-                        help = 'optional path to FITS file containing image to use as PSF',
-                        default = '')
+                        help = 'optional path to FITS file containing image to use as PSF', default = '')
     parser.add_argument('-d', dest = 'dist', type = float, metavar = 'distance',
                         help = 'distance in pc (if not provided, disc scale will be in \'\')', default = np.nan)
     parser.add_argument('-f', dest = 'fstar', type = float, metavar = 'stellar_flux',
@@ -601,16 +609,19 @@ def parse_args():
     parser.add_argument('-m', dest = 'model_scale', type = int, metavar = 'model_scale',
                         help = 'PACS pixel / high-res model pixel size ratio (default 5)', default = 5)
     parser.add_argument('-a', dest = 'alpha', type = float, metavar = 'alpha',
-                        help = 'surface brightness profile index (d^-alpha; default 1.5)',
-                        default = 1.5)
+                        help = 'surface brightness profile index (d^-alpha; default 1.5)', default = 1.5)
     parser.add_argument('-s', dest = 'initial_steps', type = int, metavar = 'init_steps',
                         help = 'number of steps for initial optimization (default 50)', default = 50)
-    parser.add_argument('-mw', dest = 'walkers', type = int, metavar = 'walkers',
+    parser.add_argument('-mw', dest = 'walkers', type = int, metavar = 'mcwalkers',
                         help = 'number of MCMC walkers (default 200)', default = 200)
-    parser.add_argument('-ms', dest = 'steps', type = int, metavar = 'steps',
+    parser.add_argument('-ms', dest = 'steps', type = int, metavar = 'mcsteps',
                         help = 'number of MCMC steps (default 700)', default = 700)
-    parser.add_argument('-mb', dest = 'burn', type = int, metavar = 'burn',
+    parser.add_argument('-mb', dest = 'burn', type = int, metavar = 'mcburn',
                         help = 'number of MCMC steps to discard as burn-in (default 500)', default = 500)
+    parser.add_argument('-ra', dest = 'ra', type = float, metavar = 'ra',
+                        help = 'target right ascension in degrees (optional)', default = np.nan)
+    parser.add_argument('-de', dest = 'dec', type = float, metavar = 'dec',
+                        help = 'target declination in degrees (optional)', default = np.nan)
     parser.add_argument('-u', dest = 'unres', action = 'store_true',
                         help = 'if set, include a component of unresolved flux in the model')
     parser.add_argument('-t', dest = 'testres', action = 'store_true',
@@ -631,6 +642,8 @@ def parse_args():
     dist = args.dist
     stellarflux = args.fstar
     name = args.name
+    ra = args.ra
+    dec = args.dec
 
     #model parameters
     initial_steps = args.initial_steps
@@ -647,29 +660,30 @@ def parse_args():
     test = args.testres
 
     return (name_image, name_psf, savepath, name, dist, stellarflux, hires_scale, alpha, include_unres,
-            initial_steps, nwalkers, nsteps, burn, test)
+            initial_steps, nwalkers, nsteps, burn, ra, dec, test)
 
 
 def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', dist = np.nan,
         stellarflux = 0, hires_scale = 5, alpha = 1.5, include_unres = True,
-        initial_steps = 50, nwalkers = 200, nsteps = 700, burn = 500, test = False):
+        initial_steps = 50, nwalkers = 200, nsteps = 700, burn = 500, ra = np.nan,
+        dec = np.nan, test = False):
     """Fit one image and save the output."""
 
     #if given no stellar flux, force an unresolved component to be added
-    if stellarflux == 0 and ~include_unres:
+    if stellarflux == 0 and not include_unres:
         include_unres = True
         warnings.warn("No stellar flux was supplied; including an unresolved flux in the model.",
                       stacklevel = 2)
 
-
-    #if no distance is supplied, simply set d = 1 pc so that r1, r2, x0 and y0 will be in arcseconds
-    sep_unit = r'\mathrm{au}'
-    in_au = True
-
+    #if no distance is supplied, simply set d = 1 pc so that r1, r2, x0 and y0 will be in arcsec, not au;
+    #in_au will be stored in the saved output for future reference, and plots are annotated with sep_unit
     if np.isnan(dist):
         dist = 1
         sep_unit = r'^{\prime\prime}'
         in_au = False
+    else:
+        sep_unit = r'\mathrm{au}'
+        in_au = True
 
     #load in image file and extract some important data
     with fits.open(name_image) as image_datafile:
@@ -677,9 +691,10 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
         image_data = image_datafile[1].data * 1000 #convert to mJy/pixel
 
         pfov = image_datafile[1].header['CDELT2'] * 3600 #pixel FOV in arcsec
+
         wav = int(image_datafile[0].header['WAVELNTH']) #wavelength of observations
 
-        #processing level
+        #processing level (20 or 25)
         level = int(image_datafile[0].header['LEVEL'])
 
         #extract the obsid; the appropriate keyword depends on the processing level
@@ -695,8 +710,18 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
         #position angle of pointing
         image_angle = image_datafile[0].header['POSANGLE']
 
+        #get the expected star coordinates in pixels, if RA and dec were provided
+        if not np.isnan(ra) and not np.isnan(dec):
+            star_indices = np.flip(WCS(image_datafile[1].header).wcs_world2pix([[ra, dec]], 0)[0])
+        else:
+            star_indices = None
+
+        #extract coverage level, so that we can estimate the rms flux using a suitable region of the sky
+        cov = image_datafile['coverage'].data
+
     #remove NaN pixels
     image_data[np.isnan(image_data)] = 0
+    cov[np.isnan(cov)] = 0
 
     #au per pixel
     aupp = pfov * dist
@@ -717,17 +742,15 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     natural_pixsize = 3.2 #for PACS 70/100 micron images
     uncert_scale = correlated_noise_factor(natural_pixsize, pfov)
 
-    #extract coverage level, so that we can estimate the rms flux using a suitable region of the sky
-    cov = fits.getdata(name_image, 'coverage')
-    cov[np.isnan(cov)] = 0
+
 
     #in portion of image with low coverage (i.e. towards edges), there are high levels of noise
     cov_lower_bound = 0.6 * np.max(cov)
 
     #find the coordinates of the star, assuming it's at the brightest pixel within
-    #star_search_radius arcsec of the image centre
+    #star_search_radius arcsec of the image centre (or the specified RA and dec)
     star_search_radius = 10
-    reference_indices = find_brightest(image_data, star_search_radius, pfov)
+    reference_indices = find_brightest(image_data, star_search_radius, pfov, star_indices)
 
     #find stellocentric distance to each pixel, so that we can cut out the
     #star (& disc) for the purposes of calculating the rms flux
@@ -906,7 +929,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
         ax[i].set_xlim(0, nsteps - 1)
         ax[i].set_ylabel(pnames[i])
 
-    ax[-1].set_xlabel("Step number")
+    ax[-1].set_xlabel('Step number')
 
     plt.tight_layout()
     fig.savefig(savepath + '/chains.pdf')
@@ -916,7 +939,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     print("Exporting corner plot...")
 
     #make the corner plot
-    fig = corner.corner(samples, quantiles = [0.16, 0.84], labels = pnames, show_titles = True, title_fmt = ".0f")
+    fig = corner.corner(samples, quantiles = [0.16, 0.84], labels = pnames, show_titles = True, title_fmt = '.1f')
     fig.savefig(savepath + '/corner.pdf')
     plt.close(fig)
 
@@ -952,12 +975,21 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     plot_image(ax[1], psfsub, pfov, annotation = 'PSF subtraction')
     plot_contours(ax[1], psfsub, pfov, rms)
 
-    #now the high-res model; set zero pixels to small amount (half the smallest pixel) as plotting on log scale
+    #now the high-res model; set zero pixels to small amount (half the smallest pixel) as plotting on log scale,
+    #apart from the special case where there's no resolved flux at all
     nonzero_flux = np.sum(model_unconvolved) > 0
+
     if nonzero_flux:
         model_unconvolved[model_unconvolved <= 0] = np.amin(model_unconvolved[model_unconvolved > 0]) / 2
 
-    plot_image(ax[2], model_unconvolved, pfov, scale = hires_scale, annotation = 'High-resolution model',
+    annotation_model = 'High-resolution model'
+
+    if not in_au:
+        annotation_model += f'\nNo distance{" or stellar flux " if stellarflux == 0 else " "}provided'
+    elif stellarflux == 0:
+        annotation_model += '\nNo stellar flux provided'
+
+    plot_image(ax[2], model_unconvolved, pfov, scale = hires_scale, annotation = annotation_model,
                log = nonzero_flux, scalebar = True, dist = dist)
 
     #finally, the model residuals
@@ -981,9 +1013,11 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
               " You may wish to check the residuals for issues.")
 
 
-    #finally, save some important parameters in a pickle
+    #finally, save the important parameters in a pickle for future analysis
+    #note that stellarflux is saved, so that we can check whether it was zero & hence how to interpret
+    #the model fluxes (i.e. disc flux or total system flux?)
     save_params(savepath, True, include_unres, max_likelihood, median, lower_uncertainty, upper_uncertainty,
-                is_noise, in_au)
+                is_noise, in_au, stellarflux)
 
 
 if __name__ == "__main__":
