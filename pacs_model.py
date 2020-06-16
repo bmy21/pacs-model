@@ -1,7 +1,7 @@
 import matplotlib
 #the line below needs to be here so that matplotlib can save figures
 #without an X server running - e.g. if using ssh/tmux
-matplotlib.use('Agg')
+#matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from matplotlib.ticker import LogLocator, MaxNLocator, FuncFormatter
@@ -218,14 +218,14 @@ def param_limits(shape, aupp):
 
     rmax = radius_limit(shape, aupp) #in au
 
-    #keep the disc's offset within +/- shiftmax pixels of the model origin
-    shiftmax = 4 #in PACS pixels
+    #keep the disc's x/y offsets within +/- shiftmax pixels of the model origin
+    shiftmax = 5 #in PACS pixels
 
     fmax = 10000 #i.e. 10Jy, to be safe
 
     #simple geometric model breaks down at 90 deg inclination, so limit to
     #some high value < 90 deg for now
-    imax = 89
+    imax = 88
 
     return fmax, shiftmax, rmax, imax
 
@@ -443,8 +443,21 @@ def best_psf_subtraction(image, psf, uncert):
     return image - shifted_psf(psf, result['x'])
 
 
-def consistent_gaussian(data):
-    """Establish whether the given data are consistent with a Gaussian distribution."""
+def consistent_gaussian(image, radius = None, pfov = None):
+    """Establish whether the given image is consistent with a Gaussian distribution.
+    Optionally, consider only pixels within radius arcsec of the centre."""
+
+    if radius is not None:
+        if pfov is None:
+            warnings.warn("consistent_gaussian received radius but no pfov; assuming pfov = 1.",
+                          stacklevel = 2)
+            pfov = 1
+
+        sky_separation = projected_sep_array(image.shape, [i/2 for i in image.shape], pfov)
+        data = image[sky_separation < radius]
+
+    else:
+        data = image.flatten()
 
     #perform an Anderson-Darling test for normality
     result = anderson(data)
@@ -668,7 +681,7 @@ def parse_args():
 
 
 def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', dist = np.nan,
-        stellarflux = 0, hires_scale = 5, alpha = 1.5, include_unres = True,
+        stellarflux = 0, hires_scale = 5, alpha = 1.5, include_unres = False,
         initial_steps = 100, nwalkers = 200, nsteps = 800, burn = 600, ra = np.nan,
         dec = np.nan, test = False):
     """Fit one image and save the output."""
@@ -746,14 +759,12 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     natural_pixsize = 3.2 #for PACS 70/100 micron images
     uncert_scale = correlated_noise_factor(natural_pixsize, pfov)
 
-
-
     #in portion of image with low coverage (i.e. towards edges), there are high levels of noise
     cov_lower_bound = 0.6 * np.max(cov)
 
     #find the coordinates of the star, assuming it's at the brightest pixel within
     #star_search_radius arcsec of the image centre (or the specified RA and dec)
-    star_search_radius = 10
+    star_search_radius = 12
     reference_indices = find_brightest(image_data, star_search_radius, pfov, star_indices)
 
     #find stellocentric distance to each pixel, so that we can cut out the
@@ -817,7 +828,10 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     psfsub = best_psf_subtraction(image_data, psf_data, rms * uncert_scale)
 
     if test:
-        sig, is_noise = consistent_gaussian(psfsub.flatten())
+        #test the central part of the image for normality - seems most sensible to take the radius as
+        #rms_sep_threshold since we assumed everything outside that part is noise earlier. if we test
+        #the entire image, the result will be affected by any background sources.
+        sig, is_noise = consistent_gaussian(psfsub, rms_sep_threshold, pfov)
 
         if is_noise:
             print(f"The PSF subtraction is consistent with Gaussian noise at the {sig:.0f}% level."
@@ -1009,12 +1023,12 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     plt.tight_layout()
     fig.savefig(savepath + '/image_model.png', dpi = 150)
-    #plt.show()
+    plt.show()
     plt.close(fig)
 
 
     #check whether the model appears to be a good fit
-    sig, is_noise = consistent_gaussian(residual.flatten())
+    sig, is_noise = consistent_gaussian(residual, rms_sep_threshold, pfov)
 
     if is_noise:
         print(f"The residuals are consistent with Gaussian noise at the {sig:.0f}% significance level."
