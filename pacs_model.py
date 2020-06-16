@@ -1,7 +1,7 @@
 import matplotlib
 #the line below needs to be here so that matplotlib can save figures
 #without an X server running - e.g. if using ssh/tmux
-#matplotlib.use('Agg')
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from matplotlib.ticker import LogLocator, MaxNLocator, FuncFormatter
@@ -221,7 +221,7 @@ def param_limits(shape, aupp):
     #keep the disc's x/y offsets within +/- shiftmax pixels of the model origin
     shiftmax = 5 #in PACS pixels
 
-    fmax = 10000 #i.e. 10Jy, to be safe
+    fmax = 30000 #i.e. 30Jy, to be safe
 
     #simple geometric model breaks down at 90 deg inclination, so limit to
     #some high value < 90 deg for now
@@ -445,7 +445,12 @@ def best_psf_subtraction(image, psf, uncert):
 
 def consistent_gaussian(image, radius = None, pfov = None):
     """Establish whether the given image is consistent with a Gaussian distribution.
-    Optionally, consider only pixels within radius arcsec of the centre."""
+
+    If a radius is provided, return True if either the whole image, or the region within
+    radius arcsec of the centre, is consistent with Gaussian noise. The idea here is that
+    checking only the central region reduces the likelihood of other sources influencing
+    the result, but reducing the number of pixels also increases the significance of any
+    bright pixels, so it's useful to check both regions."""
 
     if radius is not None:
         if pfov is None:
@@ -467,9 +472,11 @@ def consistent_gaussian(image, radius = None, pfov = None):
     sig = result.significance_level[2]
     crit = result.critical_values[2]
 
-    #return the sigficance level and whether the data are consistent with
-    #a Gaussian at that level
-    return sig, (result.statistic < crit)
+    #return the significance level and whether the data are consistent with a Gaussian at that level
+    if radius is None:
+        return sig, (result.statistic < crit)
+    else:
+        return sig, (result.statistic < crit or consistent_gaussian(image, None, None)[1])
 
 
 ### Functions used for plotting ###
@@ -1023,7 +1030,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     plt.tight_layout()
     fig.savefig(savepath + '/image_model.png', dpi = 150)
-    plt.show()
+    #plt.show()
     plt.close(fig)
 
 
