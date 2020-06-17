@@ -28,21 +28,18 @@ for path in Path(rootdir).rglob('*params.pickle'):
     with open(str(full_path), 'rb') as input:
         dict = pickle.load(input)
 
-
-    print(dict['resolved'])
     name = full_path.parents[0].name
+    obsid = full_path.parents[1].name
 
     imgname = full_path.parents[0] /  'image_model.png'
     chainsname = full_path.parents[0] / 'chains.pdf'
     cornername = full_path.parents[0] / 'corner.pdf'
 
-    print(name)
-
     if dict['resolved']:
         subdir = 'succeeded' if dict['model_consistent'] else 'failed'
-        copy(imgname, f'{rootdir}/sorted/{subdir}/images/{name}.png')
-        copy(chainsname, f'{rootdir}/sorted/{subdir}/chains/{name}.pdf')
-        copy(cornername, f'{rootdir}/sorted/{subdir}/corner/{name}.pdf')
+        copy(imgname, f'{rootdir}/sorted/{subdir}/images/{obsid} - {name}.png')
+        copy(chainsname, f'{rootdir}/sorted/{subdir}/chains/{obsid} - {name}.pdf')
+        copy(cornername, f'{rootdir}/sorted/{subdir}/corner/{obsid} - {name}.pdf')
 
     else:
-        copy(imgname, f'{rootdir}/sorted/unresolved/images/{name}.png')
+        copy(imgname, f'{rootdir}/sorted/unresolved/images/{obsid} - {name}.png')
