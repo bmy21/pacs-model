@@ -10,9 +10,6 @@ Fitting is performed by the script [pacs_model.py](pacs_model.py). You can eithe
 
 Optionally, an image to use as a PSF may be supplied. By default, an image of the calibration star γ Dra is used. This repository includes four such images, downloaded from the [*Herschel* Science Archive](http://archives.esac.esa.int/hsa/whsa/), and the code will choose the appropriate one based on the processing level (2 or 2.5) and wavelength (70 or 100 μm) of the image to be analysed.
 
-The code models discs as having a single power-law radial surface brightness profile between an inner and outer radius. This is often a good approximation, but high signal-to-noise images of discs with more complicated radial profiles or asymmetries may require a more detailed model.
-
-
 For fitting a large number of images, [pacs_model_batch.py](pacs_model_batch.py) should be helpful. This script reads in a CSV file ([obs_path_list.csv](input/obs_path_list.csv)) containing information about the images to fit and calls `run` for each system. An appropriately formatted CSV can be produced with the help of the notebook [get_obs_paths.ipynb](get_obs_paths.ipynb). However, note that [pacs_model_batch.py](pacs_model_batch.py) could be easily modified to read in a CSV with less information and make use of the default argument values.
 
 
@@ -34,6 +31,8 @@ If `run` receives `test = True`, the code will first try to check whether the im
 ## Implementation details
 
 Disc parameters are sampled using the MCMC technique (via the [emcee](https://emcee.readthedocs.io/en/stable/) package). The disc model itself is a purely geometric one, where the sky is divided up into pixels (which can, and probably should, be smaller than the PACS pixels), and the physical distance from the star to the disc element at each pixel is calculated given the disc's proposed inclination and position angle. The model works well in general but breaks down for edge-on discs, and hence the inclination needs to be restricted to below 90 degrees. This is not too much of a limitation in practice: restricting inclination to 88 degrees still allows [AU Mic](examples/V*%20AU%20Mic), a known edge-on disc, to be well modelled (though the breakdown close to 90 degrees likely leaves an imprint on the posterior inclination distribution).
+
+The code models discs as having a single power-law radial surface brightness profile between an inner and outer radius. This is often a good approximation, but high signal-to-noise images of discs with more complicated radial profiles or asymmetries may require a more detailed model.
 
 
 ## Future improvements
