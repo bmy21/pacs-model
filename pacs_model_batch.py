@@ -15,10 +15,10 @@ for row in df_in.itertuples():
     print(f'Performing fit number {row.Index} ({row.obsid} / {row.xid})...')
 
     try:
-        if row.xid == '* alf Gem A': pacs_model.run(row.path, savepath = f'../testing/{row.obsid}/{row.xid}',
+        if row.xid == '* 58 Eri': pacs_model.run(row.path, savepath = f'../testing/{row.obsid}/{row.xid}',
                        name = row.xid, dist = row.dist_pc, stellarflux = row.star_mjy,
                        boxsize = 13, hires_scale = 5, include_unres = True,
-                       initial_steps = 150, nwalkers = 20, nsteps = 30, burn = 20,
+                       initial_steps = 50, nwalkers = 20, nsteps = 30, burn = 20,
                        #initial_steps = 150, nwalkers = 200, nsteps = 700, burn = 500,
                        ra = row.raj2000, dec = row.dej2000,
                        test = False)

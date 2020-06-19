@@ -1,7 +1,7 @@
 import matplotlib
 #the line below needs to be here so that matplotlib can save figures
 #without an X server running - e.g. if using ssh/tmux
-matplotlib.use('Agg')
+#matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from matplotlib.ticker import LogLocator, MaxNLocator, FuncFormatter
@@ -23,6 +23,102 @@ import warnings
 import tqdm
 import os
 import shutil
+
+
+### Classes ###
+
+class Model:
+    def __init__(self, params, shape, aupp, hires_scale, alpha, include_unres, stellarflux, flux_factor):
+        #set the Model's parameters based on the given list & whether an unresolved component is included
+        (self.funres, self.fres, self.x0, self.y0,
+         self.r1, self.r2, self.inc, self.theta) = params if include_unres else np.concatenate(([0], params))
+
+        self.aupp = aupp
+        self.hires_scale = hires_scale
+        self.alpha = alpha
+        self.stellarflux = stellarflux
+        self.flux_factor = flux_factor
+        self.shape = shape
+
+        return
+
+
+    def distances_hires(self):
+        """Calculate distance from the star to the disc element at each model pixel.
+
+        Returns
+        -------
+        2D array
+            Distances in au calculated on a grid of dimensions (shape * hires_scale).
+        """
+
+        #note the use of +self.x0 but -self.y0, since RA increases to the left
+        dx, dy = np.meshgrid(np.linspace(-self.aupp * self.shape[1] / 2, self.aupp * self.shape[1] / 2,
+                                         num = self.shape[1] * self.hires_scale) + self.x0,
+                             np.linspace(-self.aupp * self.shape[0] / 2, self.aupp * self.shape[0] / 2,
+                                         num = self.shape[0] * self.hires_scale) - self.y0)
+
+        #'primed' coordinates, i.e. in a frame rotated by theta
+        dxpr = dx * np.cos(np.deg2rad(self.theta)) + dy * np.sin(np.deg2rad(self.theta))
+        dypr = -dx * np.sin(np.deg2rad(self.theta)) + dy * np.cos(np.deg2rad(self.theta))
+
+        return np.sqrt(dypr**2 + (dxpr / np.cos(np.deg2rad(self.inc)))**2)
+
+
+    def make_hires(self, include_central = True):
+        """Make a high-resolution image of the model.
+
+        Parameters
+        ----------
+        include_central : bool, optional
+            Should the model include the central bright pixel? This should be enabled
+            when comparing the model with observations, but disabling it when plotting
+            can give images with better contrast. (default: True)
+
+        Returns
+        -------
+        2D array
+            Model flux on a grid of dimensions (shape * hires_scale), in mJy/pixel.
+        """
+
+        #set disc flux based on d^(-alpha) profile
+        d = self.distances_hires()
+        in_disc = (d > self.r1) & (d < self.r2)
+        flux = np.zeros(d.shape)
+        flux[in_disc] = d[in_disc] ** (-self.alpha)
+
+        #ensure we don't divide by zero (if there's no flux, we don't need to normalize anyway)
+        if np.sum(flux) > 0:
+            flux = self.fres * flux / np.sum(flux)
+
+        #central pixel gets additional flux from star plus any unresolved flux
+        if include_central:
+            index_central = np.unravel_index(np.argmin(d), d.shape)
+            flux[index_central] += self.stellarflux + self.funres
+
+        return flux / self.flux_factor
+
+
+    def synthetic_obs(self, psf_hires):
+        """Make a synthetic observation of a disc.
+
+        Parameters
+        ----------
+        psf_hires : 2D array
+            Image to use as PSF, interpolated to the high-resolution model pixel size.
+
+        Returns
+        -------
+        2D array
+            Synthetic PACS image in mJy/pixel.
+        """
+
+        #convolve high-resolution model with high-resolution PSF
+        convolved_hires = convolve_fft(self.make_hires(), psf_hires)
+
+        #rebin to lower-resolution image pixel size
+        return self.hires_scale**2 * congrid(convolved_hires, self.shape)
+
 
 
 ### Functions used during initial setup ###
@@ -94,10 +190,6 @@ def find_brightest(image, sky_separation_threshold, pfov, centre = None):
     """
 
     if centre is None: centre = [i/2 for i in image.shape]
-
-    #print(centre)
-    #print([i/2 for i in image.shape])
-    #input('...')
 
     sky_separation = projected_sep_array(image.shape, centre, pfov)
     return np.unravel_index(np.ma.MaskedArray(image, sky_separation > sky_separation_threshold).argmax(),
@@ -230,181 +322,29 @@ def param_limits(shape, aupp):
     return fmax, shiftmax, rmax, imax
 
 
-def fix_model_params(params, include_unres):
-    """If using a model with no unresolved flux, prepend a zero to the parameter array.
-
-    Parameters
-    ----------
-    params: ndarray
-        Model parameters.
-    include_unres : bool
-        Should the model include an unresolved component?
-
-    Returns
-    -------
-    ndarray
-        Model parameters, with an additional zero prepended if necessary.
-    """
-
-    return params if include_unres else np.concatenate(([0], params))
-
-
-def distance_array(params, shape, aupp, hires_scale, include_unres):
-    """Calculate distance from the star to the disc element at each model pixel.
-
-    Parameters
-    ----------
-    params : ndarray
-        Model parameters.
-    shape : 2D tuple of ints
-        Shape of the PACS image to model.
-    aupp : float
-        Astronomical units covered by one PACS pixel.
-    hires_scale : int
-        Factor by which the model pixels are smaller than the PACS pixels.
-    include_unres : bool
-        Should the model include an unresolved component?
-
-    Returns
-    -------
-    2D array
-        Distances in au calculated on a grid of dimensions (shape * hires_scale).
-    """
-
-
-    funres, fres, x0, y0, r1, r2, inc, theta = fix_model_params(params, include_unres)
-
-    dtr = np.pi / 180.0
-
-    dx, dy = np.meshgrid(np.linspace(-aupp * shape[1] / 2, aupp * shape[1] / 2,
-                                     num = shape[1] * hires_scale) + x0, #+ as RA increases to left
-                         np.linspace(-aupp * shape[0] / 2, aupp * shape[0] / 2,
-                                     num = shape[0] * hires_scale) - y0)
-
-    dxpr = dx * np.cos(theta * dtr) + dy * np.sin(theta * dtr)
-    dypr = -dx * np.sin(theta * dtr) + dy * np.cos(theta * dtr)
-    d = np.sqrt((dypr)**2 + ((dxpr) / np.cos(inc * dtr))**2)
-
-    return d
-
-
-def model_hires(params, shape, aupp, hires_scale, alpha, include_unres, stellarflux, flux_factor, include_central = True):
-    """Make a model image of a disc, with coordinates relative to the image centre.
-
-    Parameters
-    ----------
-    params : ndarray
-        Model parameters.
-    shape : 2D tuple of ints
-        Shape of the PACS image to model.
-    aupp : float
-        Astronomical units covered by one PACS pixel.
-    hires_scale : int
-        Factor by which the model pixels are smaller than the PACS pixels.
-    alpha : float
-        Power law index defining disc brightness profile.
-    include_unres : bool
-        Should the model include an unresolved component?
-    stellarflux : float
-        Expected stellar flux in the observation band, in mJy.
-    flux_factor : float
-        Factor by which to scale down the disc flux due to high-pass filtering.
-    include_central : bool, optional
-        Should the model include the central bright pixel? (default: True)
-
-    Returns
-    -------
-    2D array
-        Model flux on a grid of dimensions (shape * hires_scale), in mJy/pixel.
-    """
-
-    funres, fres, x0, y0, r1, r2, inc, theta = fix_model_params(params, include_unres)
-
-    #set disc flux based on d^(-alpha) profile
-    d = distance_array(params, shape, aupp, hires_scale, include_unres)
-    in_disc = (d > r1) & (d < r2)
-    flux = np.zeros(d.shape)
-    flux[in_disc] = d[in_disc] ** (-alpha)
-
-    #ensure we don't divide by zero (if there's no flux, we don't need to normalize anyway)
-    if np.sum(flux) > 0:
-        flux = fres * flux / np.sum(flux)
-
-    #central pixel gets additional flux from star plus an optional component of unresolved flux
-    if include_central:
-        index_central = np.unravel_index(np.argmin(d), d.shape)
-
-        flux[index_central] += stellarflux + funres
-
-    return flux / flux_factor
-
-
-def synthetic_obs(params, psf_hires, shape, aupp, hires_scale, alpha, include_unres, stellarflux, flux_factor):
-    """Make a synthetic observation of a disc.
-
-    Parameters
-    ----------
-    params : ndarray
-        Model parameters.
-    psf_hires : 2D array
-        Image to use as PSF, interpolated to the model pixel size.
-    shape : 2D tuple of ints
-        Shape of the PACS image to model.
-    aupp : float
-        Astronomical units covered by one PACS pixel.
-    hires_scale : int
-        Factor by which the model pixels are smaller than the PACS pixels.
-    alpha : float
-        Power law index defining disc brightness profile.
-    include_unres : bool
-        Should the model include an unresolved component?
-    stellarflux : float
-        Expected stellar flux in the observation band, in mJy.
-    flux_factor : float
-        Factor by which to scale down the disc flux due to high-pass filtering.
-
-    Returns
-    -------
-    2D array
-        Synthetic PACS image, with the same shape as the actual image, in mJy/pixel.
-    """
-
-    #convolve high-resolution model with high-resolution PSF
-    model = convolve_fft(model_hires(params, shape, aupp, hires_scale,
-                                     alpha, include_unres, stellarflux, flux_factor),
-                         psf_hires)
-
-    #rebin to lower-resolution image pixel size
-    model = hires_scale**2 * congrid(model, shape, method = 'linear', centre = False, minusone = False)
-
-    return model
-
-
 def chi2(params, psf_hires, aupp, hires_scale, alpha, include_unres, stellarflux, flux_factor, image, uncert):
     """Subtract model from image and calculate the chi-squared value, with uncertainties given by uncert."""
 
-    funres, fres, x0, y0, r1, r2, inc, theta = fix_model_params(params, include_unres)
+    model = Model(params, image.shape, aupp, hires_scale, alpha, include_unres, stellarflux, flux_factor)
 
+    #TODO: change the rmax limitation to a restriction on zero flux models
     _, shiftmax, rmax, imax = param_limits(image.shape, aupp)
 
     #impose uniform priors within some ranges
     #(note that the fluxes don't have an upper limit here)
-    if (funres < 0 or fres < 0
-        or r1 <= 0 or r2 <= 0 or r1 > rmax or r2 > rmax
-        or inc < 0 or inc > imax
-        or abs(x0) > shiftmax * aupp or abs(y0) > shiftmax * aupp
-        or abs(theta) > 90):
+    if (model.funres < 0 or model.fres < 0
+        or model.r1 <= 0 or model.r2 <= 0 or model.r1 > rmax or model.r2 > rmax
+        or model.inc < 0 or model.inc > imax
+        or abs(model.x0) > shiftmax * aupp or abs(model.y0) > shiftmax * aupp
+        or abs(model.theta) > 90):
         return np.inf
 
     #force the disc to be at least a model pixel wide
-    dr_pix = (r2 - r1) * np.cos(np.deg2rad(inc)) * (hires_scale / aupp)
-    if (r1 >= r2 or dr_pix <= 1):
+    dr_pix = (model.r2 - model.r1) * np.cos(np.deg2rad(model.inc)) * (hires_scale / aupp)
+    if (model.r1 >= model.r2 or dr_pix <= 1):
         return np.inf
 
-    model = synthetic_obs(params, psf_hires, image.shape, aupp,
-                          hires_scale, alpha, include_unres, stellarflux, flux_factor)
-
-    return np.sum(((image - model) / uncert) ** 2)
+    return np.sum(((image - model.synthetic_obs(psf_hires)) / uncert) ** 2)
 
 
 def log_probability(params, *args):
@@ -528,7 +468,7 @@ def plot_image(ax, image, pfov, scale = 1, xlabel = True, ylabel = False, log = 
                 verticalalignment = 'top', horizontalalignment = 'left')
 
     #add a scalebar if desired
-    #to do: automatically decide on an appropriate length for the scalebar?
+    #TODO: automatically decide on an appropriate length for the scalebar?
     if scalebar:
         if dist is None:
             warnings.warn("No distance provided to plot_image. Unable to plot a scale bar.",
@@ -703,7 +643,8 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
                       stacklevel = 2)
 
     #if no distance is supplied, simply set d = 1 pc so that r1, r2, x0 and y0 will be in arcsec, not au;
-    #in_au will be stored in the saved output for future reference, and plots are annotated with sep_unit
+    #in_au will be stored in the saved output for future reference, and plots are annotated with sep_unit,
+    #which is intended to be embedded in a LaTeX string
     if np.isnan(dist):
         dist = 1
         sep_unit = r'^{\prime\prime}'
@@ -822,11 +763,10 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     psf_data /= np.sum(psf_data)
 
     #rebin PSF to pixel scale of high-resolution model, then re-normalize
-    psf_data_hires = congrid(psf_data, [i * hires_scale for i in psf_data.shape],
-                             method = 'linear', centre = False, minusone = True)
+    psf_data_hires = congrid(psf_data, [i * hires_scale for i in psf_data.shape], minusone = True)
     psf_data_hires /= np.sum(psf_data_hires)
 
-    #before starting to save output, remove any old files
+    #before starting to save output, remove any old files in the output folder
     if os.path.exists(savepath):
         shutil.rmtree(savepath)
 
@@ -989,15 +929,15 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     #now make a four-panel image: [data, psf subtraction, high-res max-likelihood model, residuals]
     print("Exporting image of best-fit model...")
 
-    model = synthetic_obs(max_likelihood, psf_data_hires, image_data.shape,
-                          aupp, hires_scale, alpha, include_unres, stellarflux, flux_factor)
+    model = Model(max_likelihood, image_data.shape, aupp, hires_scale, alpha,
+                  include_unres, stellarflux, flux_factor)
+
+
+    residual = image_data - model.synthetic_obs(psf_data_hires)
 
     #don't include the central bright pixel for display purposes
-    model_unconvolved = model_hires(max_likelihood, image_data.shape,
-                                    aupp, hires_scale, alpha, include_unres, stellarflux,
-                                    flux_factor, include_central = False)
+    hires_model = model.make_hires(include_central = False)
 
-    residual = image_data - model
 
     fig, ax = plt.subplots(nrows = 1, ncols = 4, figsize = (18, 6), sharey = True)
 
@@ -1010,10 +950,10 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     #now the high-res model; set zero pixels to small amount (half the smallest pixel) as plotting on log scale,
     #apart from in the special case where there's no resolved flux at all
-    nonzero_flux = np.sum(model_unconvolved) > 0
+    nonzero_flux = np.sum(hires_model) > 0
 
     if nonzero_flux:
-        model_unconvolved[model_unconvolved <= 0] = np.amin(model_unconvolved[model_unconvolved > 0]) / 2
+        hires_model[hires_model <= 0] = np.amin(hires_model[hires_model > 0]) / 2
 
     annotation_model = 'High-resolution model'
     annotation_model += f'\nUnresolved component{" " if include_unres else " not "}included'
@@ -1023,7 +963,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     elif stellarflux == 0:
         annotation_model += '\nNo stellar flux provided'
 
-    plot_image(ax[2], model_unconvolved, pfov, scale = hires_scale, annotation = annotation_model,
+    plot_image(ax[2], hires_model, pfov, scale = hires_scale, annotation = annotation_model,
                log = nonzero_flux, scalebar = True, scalebar_au = 100 if dist < 1000 else 1000, dist = dist)
 
     #finally, the model residuals
@@ -1032,7 +972,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     plt.tight_layout()
     fig.savefig(savepath + '/image_model.png', dpi = 150)
-    #plt.show()
+    plt.show()
     plt.close(fig)
 
 
