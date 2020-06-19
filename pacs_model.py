@@ -630,6 +630,8 @@ def parse_args():
                         help = 'distance in pc (if not provided, disc scale will be in \'\')', default = np.nan)
     parser.add_argument('-f', dest = 'fstar', type = float, metavar = 'stellar_flux',
                         help = 'stellar flux from synthetic photometry in mJy (default 0)', default = 0)
+    parser.add_argument('-b', dest = 'boxsize', type = int, metavar = 'boxsize',
+                        help = 'image cutout has dimension 2 * boxsize + 1 (default 13)', default = 13)
     parser.add_argument('-m', dest = 'model_scale', type = int, metavar = 'model_scale',
                         help = 'PACS pixel / high-res model pixel size ratio (default 5)', default = 5)
     parser.add_argument('-a', dest = 'alpha', type = float, metavar = 'alpha',
@@ -672,6 +674,7 @@ def parse_args():
     #model parameters
     initial_steps = args.initial_steps
     alpha = args.alpha
+    boxsize = args.boxsize
     include_unres = args.unres
 
     #make high-resolution model with (hires_scale*hires_scale) sub-pixels per PACS pixel
@@ -688,7 +691,7 @@ def parse_args():
 
 
 def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', dist = np.nan,
-        stellarflux = 0, hires_scale = 5, alpha = 1.5, include_unres = False,
+        stellarflux = 0, boxsize = 13, hires_scale = 5, alpha = 1.5, include_unres = False,
         initial_steps = 100, nwalkers = 200, nsteps = 800, burn = 600, ra = np.nan,
         dec = np.nan, test = False):
     """Fit one image and save the output."""
@@ -776,7 +779,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     #find stellocentric distance to each pixel, so that we can cut out the
     #star (& disc) for the purposes of calculating the rms flux
-    rms_sep_threshold = 15
+    rms_sep_threshold = 20
     sky_separation = projected_sep_array(image_data.shape, reference_indices, pfov)
 
     #estimate the background rms flux
@@ -784,8 +787,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     #only interested in the star (& disc) at the centre of the image,
     #so cut out that part to save time
-    img_boxscale = 13 #recall that the cutout will have dimension (2 * img_boxscale + 1)
-    image_data = crop_image(image_data, reference_indices, img_boxscale)
+    image_data = crop_image(image_data, reference_indices, boxsize)
 
     #if no PSF is provided, select one based on the processing level and wavelength
     if name_psf == '':
@@ -813,10 +815,10 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
 
     #cut out the PSF, rotate it to the appropriate orientation, and normalize it
-    psf_boxscale = img_boxscale
+    psf_boxsize = boxsize
     angle = psf_angle - image_angle
     psf_data = rotate(psf_data, angle)
-    psf_data = crop_image(psf_data, find_brightest(psf_data, star_search_radius, pfov), psf_boxscale)
+    psf_data = crop_image(psf_data, find_brightest(psf_data, star_search_radius, pfov), psf_boxsize)
     psf_data /= np.sum(psf_data)
 
     #rebin PSF to pixel scale of high-resolution model, then re-normalize
