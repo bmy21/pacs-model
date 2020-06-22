@@ -9,7 +9,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import argparse
 import numpy as np
 from scipy.optimize import differential_evolution
-from scipy.ndimage.interpolation import shift, rotate
+from scipy.ndimage import shift, rotate
 from scipy.stats import anderson
 from astropy.io import fits
 from astropy.convolution import convolve_fft
@@ -226,6 +226,12 @@ class Plottable:
                           np.linspace(limits[2], limits[3], self.image.shape[0]),
                           self.image, [i * rms for i in levels],
                           colors = [neg_col, neg_col, pos_col, pos_col], linestyles = 'solid')
+
+
+    def shifted(self, params):
+        """Return a shifted and scaled copy of self.image."""
+
+        return shift(self.image, [params[0], params[1]]) * params[2] / np.amax(self.image)
 
 
 class Model(Plottable):
@@ -546,35 +552,6 @@ def choose_psf(level, wav):
 
 ### Functions used for disc model fitting ###
 
-#TODO: remove these two functions (need to change shifted psf)
-def radius_limit(shape, aupp, phys = 2000):
-    """Return a sensible limit on the disc's outer radius in au."""
-
-    #make sure the disc doesn't lie entirely outside the image field of view;
-    #also impose a physical limit in au, which is 2000 by default
-    #(see e.g. Fig 3 of Hughes et al. 2018)
-    return min(min(shape) * aupp / np.sqrt(2), phys)
-
-
-def param_limits(shape, aupp):
-    """Return limits defining the box in which to optimize parameters.
-    The image shape must be supplied to make sure the disc doesn't lie
-    outside the image."""
-
-    rmax = radius_limit(shape, aupp) #in au
-
-    #keep the disc's x/y offsets within +/- shiftmax pixels of the model origin
-    shiftmax = 5 #in PACS pixels
-
-    fmax = 30000 #i.e. 30Jy, to be safe
-
-    #simple geometric model breaks down at 90 deg inclination, so limit to
-    #some high value < 90 deg for now
-    imax = 88
-
-    return fmax, shiftmax, rmax, imax
-
-
 def chi2(params, psf, alpha, include_unres, stellarflux, obs, param_limits):
     """Subtract model from image and calculate the chi-squared value, with uncertainties given by uncert."""
 
@@ -608,35 +585,19 @@ def log_probability(params, *args):
     return -0.5 * chi2(params, *args)
 
 
-def shifted_psf(psf, params):
-    """Shift the provided PSF by offset (in pixels) and normalize its peak to scale."""
-
-    x0, y0, scale = params
-    model = shift(psf, [x0, y0])
-
-    return model * scale / np.amax(model)
-
-
-def chi2_shifted_psf(params, image, psf, uncert):
-    """Calculate the chi-squared value associated with a PSF-subtracted image."""
-
-    model = shifted_psf(psf, params)
-
-    return np.sum(((image - model) / uncert) ** 2)
-
-
-def best_psf_subtraction(image, psf, uncert):
+def best_psf_subtraction(obs, psf, param_limits):
     """Return the best-fitting PSF-subtracted image."""
 
-    _, shiftmax, _, _ = param_limits(image.shape, 0)
-
     #note that shiftmax here is in PACS pixels
-    limits = [(-shiftmax, shiftmax), (-shiftmax, shiftmax), (0, 2 * np.amax(image))]
+    limits = [(-param_limits.shiftmax, param_limits.shiftmax), #x shift
+              (-param_limits.shiftmax, param_limits.shiftmax), #y shift
+              (0, 2 * np.amax(obs.image))]                     #peak flux
 
-    result = differential_evolution(chi2_shifted_psf, limits, args = (image, psf, uncert))
 
-    return image - shifted_psf(psf, result['x'])
+    result = differential_evolution(lambda p: np.sum(((obs.image - psf.shifted(p)) / obs.uncert) ** 2),
+                                    limits)
 
+    return Plottable(image = obs.image - psf.shifted(result['x']), pfov = obs.pfov)
 
 
 ### Main functions ###
@@ -678,9 +639,13 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     obs = Observation(name_image, target_ra = ra, target_dec = dec, dist = dist, boxsize = boxsize)
 
-    #put the star name, obsid/level and wavelength together into an annotation for the image plot
-    #TODO: ensure that a name always gets chosen (ie from FITS if necessary)
-    annotation = '\n'.join([f'{obs.wav} μm image (level {(obs.level/10):g})', f'ObsID: {obs.obsid}', name])
+    #put the star name, distance, obsid/level & wavelength together into an annotation for the image
+    annotation = '\n'.join([f'{obs.wav} μm image (level {(obs.level/10):g})',
+                            f'ObsID: {obs.obsid}',
+                            name if name != '' else obs.name])
+
+    if not np.isnan(dist):
+        annotation += f' (at {dist:.1f} pc)'
 
 
     #if no PSF is provided, select one based on the processing level and wavelength
@@ -705,9 +670,21 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     os.makedirs(savepath)
 
+    #upper limits on the model parameters;
+    #note that the radius is restricted either to 2000 au (see e.g. Fig 3 of Hughes et al. 2018)
+    #or to the half-diagonal length of the image - this is a quick way of ensuring that we don't
+    #end up with arbitrarily large discs that lie completely outside the image cutout (which is
+    #a problem because such discs can have arbitrarily large fluxes)
+    param_limits = ParamLimits(
+                               fmax = 200000,   #mJy (rare but there are a few systems this bright)
+                               shiftmax = 5,    #PACS pixels
+                               rmax = min(min(obs.image.shape) * obs.aupp / np.sqrt(2), 2000), #au
+                               imax = 88        #deg
+                              )
+
 
     #if requested, first check whether the image is consistent with a PSF and skip the fit if possible
-    psfsub = Plottable(image = best_psf_subtraction(obs.image, psf.image, obs.uncert), pfov = obs.pfov)
+    psfsub = best_psf_subtraction(obs, psf, param_limits)
 
     if test:
         sig, is_noise = psfsub.consistent_gaussian(15)
@@ -722,10 +699,10 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
             fig, ax = plt.subplots(nrows = 1, ncols = 2, figsize = (9, 6), sharey = True)
 
             #first plot the PACS data
-            obs.plot(ax[0], annotation = annotation)
+            obs.plot(ax[0], ylabel = True, annotation = annotation)
 
             #then the PSF subtraction
-            psfsub.plot(ax[1], ylabel = False, annotation = 'PSF subtraction')
+            psfsub.plot(ax[1], annotation = 'PSF subtraction')
             psfsub.plot_contours(ax[1], obs.rms)
 
             plt.tight_layout()
@@ -746,17 +723,6 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     #find best-fitting parameters using differential evolution, which searches for the
     #global minimum within the parameter ranges specified by the arguments.
     #format is [<funres,> fres, x0, y0, r1, r2, inc, theta]
-
-    #note that the radius is restricted either to 2000 au (see e.g. Fig 3 of Hughes et al. 2018)
-    #or to the half-diagonal length of the image - this is a quick way of ensuring that we don't
-    #end up with arbitrarily large discs that lie completely outside the image cutout (which is
-    #a problem because such discs can have arbitrarily large fluxes)
-    param_limits = ParamLimits(
-                               fmax = 200000,   #mJy (rare but there are a few systems this bright)
-                               shiftmax = 5,    #PACS pixels
-                               rmax = min(min(obs.image.shape) * obs.aupp / np.sqrt(2), 2000), #au
-                               imax = 88        #deg
-                              )
 
     search_space = [(0, param_limits.fmax), (0, param_limits.fmax),
                     (-param_limits.shiftmax * obs.aupp, param_limits.shiftmax * obs.aupp),
@@ -873,10 +839,10 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     fig, ax = plt.subplots(nrows = 1, ncols = 4, figsize = (18, 6), sharey = True)
 
     #first plot the PACS data
-    obs.plot(ax[0], annotation = annotation)
+    obs.plot(ax[0], ylabel = True, annotation = annotation)
 
     #then the PSF subtraction
-    psfsub.plot(ax[1], ylabel = False, annotation = 'PSF subtraction')
+    psfsub.plot(ax[1], annotation = 'PSF subtraction')
     psfsub.plot_contours(ax[1], obs.rms)
 
     #now the high-res model
