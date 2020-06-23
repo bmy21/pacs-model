@@ -10,7 +10,9 @@ Fitting is performed by the script [pacs_model.py](pacs_model.py). You can eithe
 
 Optionally, an image to use as a PSF may be supplied. By default, an image of the calibration star γ Dra is used. This repository includes four such images, downloaded from the [*Herschel* Science Archive](http://archives.esac.esa.int/hsa/whsa/), and the code will choose the appropriate one based on the processing level (2 or 2.5) and wavelength (70 or 100 μm) of the image to be analysed.
 
-For fitting a large number of images, [pacs_model_batch.py](pacs_model_batch.py) should be helpful. This script reads in a CSV file ([obs_path_list.csv](input/obs_path_list.csv)) containing information about the images to fit and calls `run` for each system. An appropriately formatted CSV can be produced with the help of the notebook [get_obs_paths.ipynb](get_obs_paths.ipynb). However, note that [pacs_model_batch.py](pacs_model_batch.py) could be easily modified to read in a CSV with less information and make use of the default argument values.
+For fitting a large number of images, [pacs_model_batch.py](pacs_model_batch.py) should be helpful. This script reads in a CSV file ([obs_path_list.csv](input/obs_path_list.csv)) containing information about the images to fit and calls `run` for each system. An appropriately formatted CSV can be produced with the help of the notebook [get_obs_paths.ipynb](get_obs_paths.ipynb). However, [pacs_model_batch.py](pacs_model_batch.py) could be easily modified to read in a CSV with less information and make use of the default argument values.
+
+Finally, [gather_images.py](gather_images.py) can be used to sort the output of [pacs_model_batch.py](pacs_model_batch.py) into folders containing systems that the code classified as unresolved, succeeded and failed. I've found browsing the images in these folders to be a good way to get an overview of the results of a large batch run.
 
 
 ## Output
@@ -30,9 +32,13 @@ If `run` receives `test = True`, the code will first try to check whether the im
 
 ## Implementation details
 
-Disc parameters are sampled using the MCMC technique (via the [emcee](https://emcee.readthedocs.io/en/stable/) package). The disc model itself is a purely geometric one, where the sky is divided up into pixels (which can, and probably should, be smaller than the PACS pixels), and the physical distance from the star to the disc element at each pixel is calculated given the disc's proposed inclination and position angle. The model works well in general but breaks down for edge-on discs, and hence the inclination needs to be restricted to below 90 degrees. This is not too much of a limitation in practice: restricting inclination to 88 degrees still allows [AU Mic](examples/V*%20AU%20Mic), a known edge-on disc, to be well modelled (though the breakdown close to 90 degrees likely leaves an imprint on the posterior inclination distribution).
+There are two different methods available for generating disc models; which is used depends on whether `run` receives `model_type = ModelType.Particle` or `model_type = ModelType.Geometric`. In the first method – which I recommend using – a number of particles are generated in the disc, and their positions are binned in the sky plane to obtain a synthetic image.  The second method is a purely geometric one, where the sky is divided up into pixels, and the physical distance from the star to the disc element at each pixel is calculated given the disc's proposed inclination and position angle. 
+
+The second model (but not the first) breaks down for edge-on discs, and hence the disc's inclination needs to be restricted to below 90 degrees if it is used. Restricting inclination to e.g. 88 degrees still allows AU Mic, a known edge-on disc, to be well modelled, but the breakdown close to 90 degrees does leave an imprint on the posterior inclination distribution (which can be seen by comparing the distributions produced using both models).
 
 The code models discs as having a single power-law radial surface brightness profile between an inner and outer radius. This is often a good approximation, but high signal-to-noise images of discs with more complicated radial profiles or asymmetries may require a more detailed model.
+
+Disc parameters are sampled using the MCMC technique (via the [emcee](https://emcee.readthedocs.io/en/stable/) package). 
 
 
 ## Future improvements
@@ -41,4 +47,4 @@ Some features that it would be beneficial to add in the future:
 
 - An option to include more than one point source in the model, to account for any nearby companions or background objects. Since the code currently doesn't do this, what generally happens in multiple-source images is that the best-fitting model has a disc whose ansae pass through at least one of the sources. These 'discs' can sometimes fit the data well, but are unlikely to be the true explanation of what's going on!
 
-- A full 3D disc model that doesn't require any restriction on inclination. This would involve generating a number of particles in the disc based on its parameters, then binning their positions in the sky plane to get the observed intensity. The main advantage of this would be better handling of high inclinations. However, the current model allows for much faster fitting and, as noted above, generally works sufficiently well to allow the disc parameters to be constrained.
+- An option to overplot the locations and names of any objects in the field of view that are listed in SIMBAD. It would be useful to have an immediate way to see e.g. whether a binary companion is nearby, as a medium-separation binary where the sources overlap could appear at first glance to be a star with a resolved disc.
