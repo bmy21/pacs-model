@@ -20,6 +20,7 @@ import corner
 from rebin import congrid
 from multiprocessing import Pool
 from collections import namedtuple
+from enum import Enum
 import warnings
 import tqdm
 import os
@@ -28,9 +29,8 @@ import shutil
 
 ### Classes ###
 
-#A simple data structure designed to hold upper limits on model parameters
+#A simple data structure intended to hold upper limits on model parameters
 ParamLimits = namedtuple('ParamLimits', ['fmax', 'shiftmax', 'rmax', 'imax'])
-
 
 class Plottable:
     """Class representing an astronomical image (either real or synthetic), with plotting functionality."""
@@ -46,8 +46,9 @@ class Plottable:
         """Return a basic Plottable object whose image is the difference of self and other.
         Note the resulting object will not have an associated high-resolution image."""
 
-        if not np.isclose(self.pfov, other.pfov, rtol = 1e-6):
-            raise Exception("Tried to subtract two Plottables with different pixel sizes.")
+        if not np.isclose(self.pfov, other.pfov):
+            raise Exception("Tried to subtract two Plottables with different pixel sizes."
+                            f"({self.pfov} / {other.pfov})")
         else:
             return Plottable(self.pfov, self.image - other.image)
 
@@ -131,24 +132,14 @@ class Plottable:
                 -self.image.shape[0] * self.pfov / 2, self.image.shape[0] * self.pfov / 2]
 
 
-    def plot(self, ax, plot_hires = False, xlabel = True, ylabel = False, log = False,
-                   annotation = '', cmap = 'inferno', scalebar = False, dist = np.nan):
-        """Plot the given image using the provided axes, and add a colorbar below."""
+    def plot(self, ax, plot_hires = False, xlabel = True, ylabel = True, log = False,
+                   annotation = '', cmap_name = 'inferno', scalebar = False, dist = np.nan):
+        """Plot self.image or self.image_hires using the provided axes, and add a colorbar below."""
 
         #change units from mJy/pix to mJy/arcsec^2
         intensity_scale = ((self.hires_scale if plot_hires else 1)/ self.pfov)**2
 
-        #need to make a copy since image will be manipulated if log == True
-        image = self.image_hires.copy() if plot_hires else self.image.copy()
-
-        #set zero pixels to arbitrary small amount (half the smallest pixel) to allow log plotting
-        if log:
-            if np.any(image < 0) or np.all(image == 0):
-                warnings.warn("Cannot plot this image on a log scale. Using a linear scale.",
-                              stacklevel = 2)
-                log = False
-            else:
-                image[image == 0] = np.amin(image[image > 0]) / 2
+        image = self.image_hires if plot_hires else self.image
 
         if xlabel: ax.set_xlabel('$\mathregular{RA\ offset\ /\ arcsec}$')
         if ylabel: ax.set_ylabel('$\mathregular{Dec\ offset\ /\ arcsec}$')
@@ -156,6 +147,10 @@ class Plottable:
         ax.tick_params(direction = 'in', color = 'white', width = 1, right = True, top = True)
 
         limits = self._get_limits()
+
+        #plot NaN pixels (which will likely arise if plotting on a log scale) in black
+        cmap = plt.cm.get_cmap(cmap_name)
+        cmap.set_bad(color = 'k')
 
         im = ax.imshow(np.log10(image * intensity_scale) if log else image * intensity_scale,
                        origin = 'lower',
@@ -217,7 +212,7 @@ class Plottable:
 
 
     def plot_contours(self, ax, rms, levels = [-3, -2, 2, 3], neg_col = 'gainsboro', pos_col = 'k'):
-        """Plot contours showing the specified RMS levels of the given image."""
+        """Plot contours showing the specified RMS levels of self.image."""
 
         limits = self._get_limits()
 
@@ -234,9 +229,26 @@ class Plottable:
         return shift(self.image, [params[0], params[1]]) * params[2] / np.amax(self.image)
 
 
+class ModelType(Enum):
+    """Enumeration used to specify the method used for making a model image."""
+
+    Geometric = 0
+    Particle = 1
+
+
 class Model(Plottable):
-    def __init__(self, params, shape, pfov, aupp, hires_scale, alpha, include_unres, stellarflux, flux_factor):
+
+    def __init__(self, params, shape, pfov, aupp, hires_scale, alpha, include_unres,
+                 stellarflux, flux_factor, model_type = ModelType.Geometric, npart = 100000):
         """Store the defining properties of the model."""
+
+        if model_type == ModelType.Geometric:
+            self._flux_function = self._geometric_model
+        elif model_type == ModelType.Particle:
+            self._flux_function = self._particle_model
+            self.npart = npart
+        else:
+            raise Exception(f"Invalid model type: {model_type}")
 
         (self.funres, self.fres, self.x0, self.y0,
          self.r1, self.r2, self.inc, self.theta) = params if include_unres else np.concatenate(([0], params))
@@ -248,16 +260,10 @@ class Model(Plottable):
         self.stellarflux = stellarflux
         self.flux_factor = flux_factor
         self.shape = shape
+        self.model_type = model_type
 
 
-    def _distances_hires(self):
-        """Calculate distance from the star to the disc element at each model pixel.
-
-        Returns
-        -------
-        2D array
-            Distances in au calculated on a grid of dimensions (shape * hires_scale).
-        """
+    def _geometric_model(self):
 
         #note the use of +self.x0 but -self.y0, since RA increases to the left
         dx, dy = np.meshgrid(np.linspace(-self.aupp * self.shape[1] / 2, self.aupp * self.shape[1] / 2,
@@ -269,20 +275,10 @@ class Model(Plottable):
         dxpr = dx * np.cos(np.deg2rad(self.theta)) + dy * np.sin(np.deg2rad(self.theta))
         dypr = -dx * np.sin(np.deg2rad(self.theta)) + dy * np.cos(np.deg2rad(self.theta))
 
-        return np.sqrt(dypr**2 + (dxpr / np.cos(np.deg2rad(self.inc)))**2)
-
-
-    def _make_hires(self):
-        """Make a high-resolution image of the model.
-
-        Returns
-        -------
-        2D array
-            Model flux on a grid of dimensions (shape * hires_scale), in mJy/pixel.
-        """
+        #distances from the star to each model pixel
+        d = np.sqrt(dypr**2 + (dxpr / np.cos(np.deg2rad(self.inc)))**2)
 
         #set disc flux based on d^(-alpha) profile
-        d = self._distances_hires()
         in_disc = (d > self.r1) & (d < self.r2)
         flux = np.zeros(d.shape)
         flux[in_disc] = d[in_disc] ** (-self.alpha)
@@ -290,6 +286,42 @@ class Model(Plottable):
         #ensure we don't divide by zero (if there's no flux, we don't need to normalize anyway)
         if np.sum(flux) > 0:
             flux = self.fres * flux / np.sum(flux)
+
+        return flux
+
+
+    def _particle_model(self):
+
+        u = np.random.uniform(size = self.npart)
+
+        #transform from uniform distribution to power-law distribution
+        d = ((self.r2 ** (1 - self.alpha) - self.r1 ** (1 - self.alpha)) * u
+             + self.r1 ** (1 - self.alpha)) ** (1 / (1 - self.alpha))
+
+        #give the particles random azimuthal angles
+        phi = np.random.uniform(0, 2 * np.pi, size = self.npart)
+
+        #coordinates in the frame aligned with the major & minor axes
+        dypr = d * np.cos(phi)
+        dxpr = d * np.sin(phi) * np.cos(np.deg2rad(self.inc))
+
+        #coordinates in the frame aligned with the image axes
+        dx = dxpr * np.cos(np.deg2rad(self.theta)) - dypr * np.sin(np.deg2rad(self.theta)) - self.x0
+        dy = dxpr * np.sin(np.deg2rad(self.theta)) + dypr * np.cos(np.deg2rad(self.theta)) + self.y0
+
+
+        flux = np.histogram2d(dy, dx,
+                              bins = [np.linspace(-self.shape[i] * self.aupp / 2,
+                                                  self.shape[i] * self.aupp / 2,
+                                                  self.shape[i] * self.hires_scale + 1) for i in range(2)])[0]
+        flux *= self.fres / self.npart
+
+        return flux
+
+
+    def _make_hires(self):
+
+        flux = self._flux_function()
 
         #scale down for lost flux
         flux /= self.flux_factor
@@ -299,26 +331,29 @@ class Model(Plottable):
         self.image_hires = flux.copy()
 
         #central pixel gets additional flux from star plus any unresolved flux
-        index_central = np.unravel_index(np.argmin(d), d.shape)
-        flux[index_central] += (self.stellarflux + self.funres) / self.flux_factor
+        flux[int((self.shape[0] * self.hires_scale / 2)
+                 + self.y0/(self.aupp/self.hires_scale)),
+             int((self.shape[1] * self.hires_scale / 2)
+                 - self.x0/(self.aupp/self.hires_scale))] += (self.stellarflux + self.funres) / self.flux_factor
 
-        #now return the flux including the central pixel for processing by make_images
         return flux
 
 
-    def make_images(self, psf_hires):
+    def make_images(self, psf):
         """Store appropriate images for analysis/plotting in self.image and self.image_hires.
 
         Parameters
         ----------
-        psf_hires : 2D array
-            Image to use as PSF for the convolved image, interpolated to the high-resolution
-            model pixel size.
+        psf : Plottable
+            Image to use as a PSF. Must have an image_hires at the same scale as self.image_hires.
         """
+
+        if self.hires_scale != psf.hires_scale:
+            raise Exception(f"Model and PSF scales do not match ({self.hires_scale} / {psf.hires_scale})")
 
         #convolve high-resolution model with high-resolution PSF; note that the call to
         #_make_hires stores self.image_hires
-        convolved_hires = convolve_fft(self._make_hires(), psf_hires)
+        convolved_hires = convolve_fft(self._make_hires(), psf.image_hires)
 
         #rebin to lower-resolution image pixel size
         self.image = self.hires_scale**2 * congrid(convolved_hires, self.shape)
@@ -428,7 +463,26 @@ class Observation(Plottable):
             self.image_hires *= np.sum(self.image) / np.sum(self.image_hires)
 
         elif hires_scale < 1:
-            raise Exception(f'hires_scale should be an integer >= 1.')
+            raise Exception(f"hires_scale should be an integer > 1.")
+
+
+    def best_psf_subtraction(self, psf, param_limits):
+        """Return the best-fitting PSF-subtracted image."""
+
+        if not np.isclose(self.pfov, self.pfov):
+            raise Exception("best_psf_subtraction received a PSF with the wrong pixel size"
+                            f"({self.pfov} / {self.pfov}).")
+
+        #note that shiftmax here is in PACS pixels
+        limits = [(-param_limits.shiftmax, param_limits.shiftmax), #x shift
+                  (-param_limits.shiftmax, param_limits.shiftmax), #y shift
+                  (0, 2 * np.amax(self.image))]                     #peak flux
+
+
+        result = differential_evolution(lambda p: np.sum(((self.image - psf.shifted(p)) / self.uncert) ** 2),
+                                        limits)
+
+        return Plottable(image = self.image - psf.shifted(result['x']), pfov = self.pfov)
 
 
     def _crop_image(self, centre, boxscale):
@@ -552,16 +606,17 @@ def choose_psf(level, wav):
 
 ### Functions used for disc model fitting ###
 
-def chi2(params, psf, alpha, include_unres, stellarflux, obs, param_limits):
+def chi2(params, psf, alpha, include_unres, stellarflux, obs, param_limits, model_type, npart):
     """Subtract model from image and calculate the chi-squared value, with uncertainties given by uncert."""
 
     model = Model(params, obs.image.shape, obs.pfov, obs.aupp, psf.hires_scale,
-                  alpha, include_unres, stellarflux, obs.flux_factor)
+                  alpha, include_unres, stellarflux, obs.flux_factor, model_type, npart)
 
     #impose uniform priors within some ranges;
     #note that the fluxes don't have an upper limit here, to allow for extremely bright cases
     if (model.funres < 0 or model.fres < 0
         or model.r1 <= 0 or model.r2 <= 0
+        or model.r1 >= model.r2
         or model.r1 > param_limits.rmax or model.r2 > param_limits.rmax
         or model.inc < 0 or model.inc > param_limits.imax
         or abs(model.x0) > param_limits.shiftmax * obs.aupp
@@ -569,13 +624,25 @@ def chi2(params, psf, alpha, include_unres, stellarflux, obs, param_limits):
         or abs(model.theta) > 90):
         return np.inf
 
-    #force the disc to be at least a model pixel wide (otherwise completely unphysical models with
-    #just a few pixels scattered around the image can result)
-    dr_pix = (model.r2 - model.r1) * np.cos(np.deg2rad(model.inc)) * (psf.hires_scale / obs.aupp)
-    if (model.r1 >= model.r2 or dr_pix <= 1):
-        return np.inf
+    #force the disc to be at least a model pixel wide if using the geometric model, otherwise
+    #unphysical models with just a few pixels scattered around the image can result
+    if model_type == ModelType.Geometric:
+        dr_pix = (model.r2 - model.r1) * np.cos(np.deg2rad(model.inc)) * (psf.hires_scale / obs.aupp)
+        if (dr_pix <= 1):
+            return np.inf
 
-    model.make_images(psf.image_hires)
+    model.make_images(psf)
+
+    #reject models that are supposed to have nonzero unresolved flux but don't (i.e. outside image cutout)
+    #if model.fres > 0 and np.sum(model.image_hires) == 0:
+    #    return np.inf
+
+    #intended_fres = model.fres / obs.flux_factor
+    #actual_fres = np.sum(model.image_hires)
+
+    #if abs(intended_fres - actual_fres)/intended_fres > 0.01:
+    #    return np.inf
+
     return np.sum(((obs.image - model.image) / obs.uncert) ** 2)
 
 
@@ -583,21 +650,6 @@ def log_probability(params, *args):
     """Log-probability to be maximized by MCMC."""
 
     return -0.5 * chi2(params, *args)
-
-
-def best_psf_subtraction(obs, psf, param_limits):
-    """Return the best-fitting PSF-subtracted image."""
-
-    #note that shiftmax here is in PACS pixels
-    limits = [(-param_limits.shiftmax, param_limits.shiftmax), #x shift
-              (-param_limits.shiftmax, param_limits.shiftmax), #y shift
-              (0, 2 * np.amax(obs.image))]                     #peak flux
-
-
-    result = differential_evolution(lambda p: np.sum(((obs.image - psf.shifted(p)) / obs.uncert) ** 2),
-                                    limits)
-
-    return Plottable(image = obs.image - psf.shifted(result['x']), pfov = obs.pfov)
 
 
 ### Main functions ###
@@ -628,7 +680,7 @@ def save_params(savepath, resolved, include_unres = None, max_likelihood = None,
 def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', dist = np.nan,
         stellarflux = 0, boxsize = 13, hires_scale = 5, alpha = 1.5, include_unres = False,
         initial_steps = 100, nwalkers = 200, nsteps = 800, burn = 600, ra = np.nan,
-        dec = np.nan, test = False):
+        dec = np.nan, test = False, model_type = ModelType.Particle, npart = 100000):
     """Fit one image and save the output."""
 
     #if given no stellar flux, force an unresolved component to be added
@@ -652,16 +704,26 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     if name_psf == '':
         name_psf = choose_psf(obs.level, obs.wav)
 
-    psf = Observation(name_psf, boxsize = boxsize, hires_scale = hires_scale, rotate_to = obs.angle,
+    #a boxsize of 13 should be large enough to cover the PSF - no need for a larger PSF
+    #even if the image is larger (this would slow down the convolution)
+    psf = Observation(name_psf, boxsize = 13, hires_scale = hires_scale, rotate_to = obs.angle,
                       normalize = True)
 
+    #however, we need to store a PSF with the same dimension as the image for the initial subtraction
+    psf_imagesize = Observation(name_psf, boxsize = boxsize, rotate_to = obs.angle, normalize = True)
+
+    fig,ax=plt.subplots()
+    psf.plot(ax,log=True)
+    plt.show()
+
     #abort execution if the PSF pixel scale doesn't match that of the image
-    if not np.isclose(psf.pfov, obs.pfov, rtol = 1e-6):
-        raise Exception("PSF and image pixel sizes do not match.")
+    if not np.isclose(psf.pfov, obs.pfov):
+        raise Exception(f"PSF and image pixel sizes do not match ({psf.pfov} / {obs.pfov}).")
 
     #issue a warning if the image and PSF are at different wavelengths
     if psf.wav != obs.wav:
-        warnings.warn("The wavelength of the supplied PSF does not match that of the image.",
+        warnings.warn("The wavelength of the supplied PSF does not match that of the image"
+                      f" ({psf.wav} / {obs.wav}).",
                       stacklevel = 2)
 
     #before starting to save output, remove any old files in the output folder
@@ -671,20 +733,20 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     os.makedirs(savepath)
 
     #upper limits on the model parameters;
-    #note that the radius is restricted either to 2000 au (see e.g. Fig 3 of Hughes et al. 2018)
-    #or to the half-diagonal length of the image - this is a quick way of ensuring that we don't
+    #note that the radii are restricted to the half-diagonal length of the image
+    #this is a quick way of ensuring that we don't
     #end up with arbitrarily large discs that lie completely outside the image cutout (which is
     #a problem because such discs can have arbitrarily large fluxes)
     param_limits = ParamLimits(
-                               fmax = 200000,   #mJy (rare but there are a few systems this bright)
-                               shiftmax = 5,    #PACS pixels
-                               rmax = min(min(obs.image.shape) * obs.aupp / np.sqrt(2), 2000), #au
-                               imax = 88        #deg
+                               fmax = 200000,                                               #mJy
+                               shiftmax = 5,                                                #PACS pixels
+                               rmax = min(obs.image.shape) * obs.aupp / np.sqrt(2), #au
+                               imax = 90 if model_type == ModelType.Particle else 88        #deg
                               )
 
 
     #if requested, first check whether the image is consistent with a PSF and skip the fit if possible
-    psfsub = best_psf_subtraction(obs, psf, param_limits)
+    psfsub = obs.best_psf_subtraction(psf_imagesize, param_limits)
 
     if test:
         sig, is_noise = psfsub.consistent_gaussian(15)
@@ -699,10 +761,10 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
             fig, ax = plt.subplots(nrows = 1, ncols = 2, figsize = (9, 6), sharey = True)
 
             #first plot the PACS data
-            obs.plot(ax[0], ylabel = True, annotation = annotation)
+            obs.plot(ax[0], annotation = annotation)
 
             #then the PSF subtraction
-            psfsub.plot(ax[1], annotation = 'PSF subtraction')
+            psfsub.plot(ax[1], ylabel = False, annotation = 'PSF subtraction')
             psfsub.plot_contours(ax[1], obs.rms)
 
             plt.tight_layout()
@@ -748,7 +810,8 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     #set tol = 0 to ensure that DE runs for the prescribed number of steps & the progress bar works
     res = differential_evolution(chi2, search_space,
-                                args = (psf, alpha, include_unres, stellarflux, obs, param_limits),
+                                args = (psf, alpha, include_unres, stellarflux,
+                                        obs, param_limits, model_type, npart),
                                 updating = 'deferred', workers = -1, #use multiprocessing
                                 tol = 0, popsize = 20, maxiter = initial_steps, polish = False,
                                 callback = (lambda xk, convergence: pbar.update()))
@@ -762,7 +825,8 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     with Pool() as pool:
         sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability,
-                                        args = (psf, alpha, include_unres, stellarflux, obs, param_limits),
+                                        args = (psf, alpha, include_unres, stellarflux,
+                                                obs, param_limits, model_type, npart),
                                         pool = pool)
 
         #initialize the walkers with an ndim-dimensional Gaussian distribution
@@ -832,17 +896,17 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     print("Exporting image of best-fit model...")
 
     model = Model(max_likelihood, obs.image.shape, obs.pfov, obs.aupp, hires_scale, alpha,
-                  include_unres, stellarflux, obs.flux_factor)
+                  include_unres, stellarflux, obs.flux_factor, model_type, npart)
 
-    model.make_images(psf.image_hires)
+    model.make_images(psf)
 
     fig, ax = plt.subplots(nrows = 1, ncols = 4, figsize = (18, 6), sharey = True)
 
     #first plot the PACS data
-    obs.plot(ax[0], ylabel = True, annotation = annotation)
+    obs.plot(ax[0], annotation = annotation)
 
     #then the PSF subtraction
-    psfsub.plot(ax[1], annotation = 'PSF subtraction')
+    psfsub.plot(ax[1], ylabel = False, annotation = 'PSF subtraction')
     psfsub.plot_contours(ax[1], obs.rms)
 
     #now the high-res model
@@ -854,8 +918,8 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     elif stellarflux == 0:
         annotation_model += '\nNo stellar flux provided'
 
-    model.plot(ax[2], plot_hires = True, annotation = annotation_model, ylabel = False,
-               log = True, scalebar = obs.in_au, dist = dist)
+    model.plot(ax[2], ylabel = False, plot_hires = True, annotation = annotation_model,
+               scalebar = obs.in_au, dist = dist, log = True)
 
 
     #finally, the model residuals
@@ -923,10 +987,15 @@ def parse_args():
                         help = 'target right ascension in degrees (optional)', default = np.nan)
     parser.add_argument('-de', dest = 'dec', type = float, metavar = 'dec',
                         help = 'target declination in degrees (optional)', default = np.nan)
-    parser.add_argument('-u', dest = 'unres', action = 'store_true',
-                        help = 'if set, include a component of unresolved flux in the model')
-    parser.add_argument('-t', dest = 'testres', action = 'store_true',
-                        help = 'if set, test whether the system appears consistent with a point source and skip disc fit if so')
+    parser.add_argument('--type', dest = 'model_type', metavar = 'type',
+                        help = 'model type: g for geometric, p for particle (default p)', default = 'p')
+    parser.add_argument('--npart', dest = 'npart', metavar = 'npart', type = int,
+                        help = 'number of particles if using model p (default 100000)', default = 100000)
+    parser.add_argument('--unres', dest = 'unres', action = 'store_true',
+                        help = 'include a component of unresolved flux in the model')
+    parser.add_argument('--test', dest = 'testres', action = 'store_true',
+                        help = 'test whether the system appears consistent with a point source'
+                               ' and skip disc fit if so')
 
     args = parser.parse_args()
 
@@ -951,6 +1020,16 @@ def parse_args():
     alpha = args.alpha
     boxsize = args.boxsize
     include_unres = args.unres
+    model_type_str = args.model_type
+
+    if model_type_str == 'g':
+        model_type = ModelType.Geometric
+    elif model_type_str == 'p':
+        model_type = ModelType.Particle
+    else:
+        raise Exception(f"Invalid model type: {model_type_str}.")
+
+    npart = args.npart
 
     #make high-resolution model with (hires_scale*hires_scale) sub-pixels per PACS pixel
     hires_scale = args.model_scale
@@ -962,7 +1041,7 @@ def parse_args():
     test = args.testres
 
     return (name_image, name_psf, savepath, name, dist, stellarflux, boxsize, hires_scale, alpha, include_unres,
-            initial_steps, nwalkers, nsteps, burn, ra, dec, test)
+            initial_steps, nwalkers, nsteps, burn, ra, dec, test, model_type, npart)
 
 
 #allow command-line execution
