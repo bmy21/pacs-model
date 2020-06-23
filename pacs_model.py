@@ -27,6 +27,8 @@ import os
 import shutil
 
 
+#TODO: think about radius/flux limits...
+
 ### Classes ###
 
 #A simple data structure intended to hold upper limits on model parameters
@@ -47,7 +49,7 @@ class Plottable:
         Note the resulting object will not have an associated high-resolution image."""
 
         if not np.isclose(self.pfov, other.pfov):
-            raise Exception("Tried to subtract two Plottables with different pixel sizes."
+            raise Exception("Tried to subtract two Plottables with different pixel sizes "
                             f"({self.pfov} / {other.pfov})")
         else:
             return Plottable(self.pfov, self.image - other.image)
@@ -284,6 +286,10 @@ class Model(Plottable):
         flux[in_disc] = d[in_disc] ** (-self.alpha)
 
         #ensure we don't divide by zero (if there's no flux, we don't need to normalize anyway)
+        #NOTE: normalization for the geometric model works differently to the particle model, in that
+        #the flux within the image field of view, rather than the total flux in the disc, is set to fres.
+        #these are equivalent as long as the disc lies entirely within the image, but not if it
+        #extends partially outside the bounds.
         if np.sum(flux) > 0:
             flux = self.fres * flux / np.sum(flux)
 
@@ -292,12 +298,8 @@ class Model(Plottable):
 
     def _particle_model(self):
 
-        u = np.random.uniform(size = self.npart)
-
-        #transform from uniform distribution to power-law distribution
-        index = 1 - self.alpha
-        d = ((self.r2 ** (1 + index) - self.r1 ** (1 + index)) * u
-             + self.r1 ** (1 + index)) ** (1 / (1 + index))
+        #uniformly distributed distances
+        d = np.random.uniform(low = self.r1, high = self.r2, size = self.npart)
 
         #give the particles random azimuthal angles
         phi = np.random.uniform(0, 2 * np.pi, size = self.npart)
@@ -310,12 +312,12 @@ class Model(Plottable):
         dx = dxpr * np.cos(np.deg2rad(self.theta)) - dypr * np.sin(np.deg2rad(self.theta)) - self.x0
         dy = dxpr * np.sin(np.deg2rad(self.theta)) + dypr * np.cos(np.deg2rad(self.theta)) + self.y0
 
-
+        index = 1 - self.alpha #gives a surface brightness profile of d**-alpha
         flux = np.histogram2d(dy, dx,
+                              weights = (self.fres / np.sum(d ** index)) * d ** index, #disc normalized to fres
                               bins = [np.linspace(-self.shape[i] * self.aupp / 2,
                                                   self.shape[i] * self.aupp / 2,
                                                   self.shape[i] * self.hires_scale + 1) for i in range(2)])[0]
-        flux *= self.fres / self.npart
 
         return flux
 
@@ -393,7 +395,7 @@ class Observation(Plottable):
 
         #refuse to analyse 160 micron data (70/100 is always available and generally at higher S/N)
         if self.wav != 70 and self.wav != 100:
-            raise Exception(f"Please provide a 70 or 100 μm image ({filename} is at {self.wav} μm).")
+            raise Exception(f"Please provide a 70 or 100 μm image ({filename} is at {self.wav} μm)")
 
         #factors to correct for flux lost during high-pass filtering (see Kennedy et al. 2012)
         if self.wav == 70:
@@ -464,15 +466,15 @@ class Observation(Plottable):
             self.image_hires *= np.sum(self.image) / np.sum(self.image_hires)
 
         elif hires_scale < 1:
-            raise Exception(f"hires_scale should be an integer > 1.")
+            raise Exception(f"hires_scale should be an integer > 1")
 
 
     def best_psf_subtraction(self, psf, param_limits):
         """Return the best-fitting PSF-subtracted image."""
 
-        if not np.isclose(self.pfov, self.pfov):
-            raise Exception("best_psf_subtraction received a PSF with the wrong pixel size"
-                            f"({self.pfov} / {self.pfov}).")
+        if not np.isclose(self.pfov, psf.pfov):
+            raise Exception("best_psf_subtraction received a PSF with the wrong pixel size "
+                            f"({self.pfov} / {psf.pfov})")
 
         #note that shiftmax here is in PACS pixels
         limits = [(-param_limits.shiftmax, param_limits.shiftmax), #x shift
@@ -587,7 +589,7 @@ def choose_psf(level, wav):
             name_psf = ('psf/gamma_dra_70/1342217404/level2_5/HPPHPFMAPB/'
                         'hpacs_25HPPHPFMAPB_blue_1757_p5129_00_v1.0_1470980845846.fits.gz')
         else:
-            raise Exception(f'No level {level} PSF is provided by default.')
+            raise Exception(f'No level {level} PSF is provided by default')
 
     elif wav == 100:
         if level == 20:
@@ -600,7 +602,7 @@ def choose_psf(level, wav):
             raise Exception(f'No level {level} PSF is provided by default.')
 
     else:
-        raise Exception(f'No {wav} μm PSF is provided by default.')
+        raise Exception(f'No {wav} μm PSF is provided by default')
 
     return name_psf
 
@@ -713,18 +715,14 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     #however, we need to store a PSF with the same dimension as the image for the initial subtraction
     psf_imagesize = Observation(name_psf, boxsize = boxsize, rotate_to = obs.angle, normalize = True)
 
-    fig,ax=plt.subplots()
-    psf.plot(ax,log=True)
-    plt.show()
-
     #abort execution if the PSF pixel scale doesn't match that of the image
     if not np.isclose(psf.pfov, obs.pfov):
-        raise Exception(f"PSF and image pixel sizes do not match ({psf.pfov} / {obs.pfov}).")
+        raise Exception(f"PSF and image pixel sizes do not match ({psf.pfov} / {obs.pfov})")
 
     #issue a warning if the image and PSF are at different wavelengths
     if psf.wav != obs.wav:
         warnings.warn("The wavelength of the supplied PSF does not match that of the image"
-                      f" ({psf.wav} / {obs.wav}).",
+                      f" ({psf.wav} / {obs.wav})",
                       stacklevel = 2)
 
     #before starting to save output, remove any old files in the output folder
@@ -911,7 +909,8 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     psfsub.plot_contours(ax[1], obs.rms)
 
     #now the high-res model
-    annotation_model = 'High-resolution model'
+    annotation_model = 'High-resolution model '
+    annotation_model += f'({npart} particles)' if model_type == ModelType.Particle else '(geometric)'
     annotation_model += f'\nUnresolved component{" " if include_unres else " not "}included'
 
     if not obs.in_au:
@@ -1028,7 +1027,7 @@ def parse_args():
     elif model_type_str == 'p':
         model_type = ModelType.Particle
     else:
-        raise Exception(f"Invalid model type: {model_type_str}.")
+        raise Exception(f"Invalid model type: {model_type_str}")
 
     npart = args.npart
 
