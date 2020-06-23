@@ -295,8 +295,9 @@ class Model(Plottable):
         u = np.random.uniform(size = self.npart)
 
         #transform from uniform distribution to power-law distribution
-        d = ((self.r2 ** (1 - self.alpha) - self.r1 ** (1 - self.alpha)) * u
-             + self.r1 ** (1 - self.alpha)) ** (1 / (1 - self.alpha))
+        index = 1 - self.alpha
+        d = ((self.r2 ** (1 + index) - self.r1 ** (1 + index)) * u
+             + self.r1 ** (1 + index)) ** (1 / (1 + index))
 
         #give the particles random azimuthal angles
         phi = np.random.uniform(0, 2 * np.pi, size = self.npart)
