@@ -502,11 +502,10 @@ class Observation(Plottable):
 
         #this function guarantees that the desired pixel will be exactly at the centre
         #as long as boxscale < centre[i], which is useful for making centred plots
+        
+        self.image = self.image[int(centre[0] - boxscale) : int(centre[0] + boxscale + 1),
+                                int(centre[1] - boxscale) : int(centre[1] + boxscale + 1)]
 
-        #TODO: implement this in a simpler way?
-
-        self.image = self.image[np.ix_(range(int(centre[0] - boxscale), int(centre[0] + boxscale + 1)),
-                                range(int(centre[1] - boxscale), int(centre[1] + boxscale + 1)))]
 
 
     def _estimate_background(self, condition = None, sigma_level = 3.0, tol = 1e-6, max_iter = 20):
@@ -649,7 +648,7 @@ def save_params(savepath, resolved, include_unres = None, max_likelihood = None,
 
 
 def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', dist = np.nan,
-        stellarflux = 0, boxsize = 13, hires_scale = 5, alpha = 1.5, include_unres = False,
+        stellarflux = 0, boxsize = 13, hires_scale = 3, alpha = 1.5, include_unres = False,
         initial_steps = 100, nwalkers = 200, nsteps = 800, burn = 600, ra = np.nan,
         dec = np.nan, test = False, model_type = ModelType.Particle, npart = 100000):
     """Fit one image and save the output."""
@@ -663,7 +662,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     obs = Observation(name_image, target_ra = ra, target_dec = dec, dist = dist, boxsize = boxsize)
 
     #put the star name, distance, obsid/level & wavelength together into an annotation for the image
-    annotation = '\n'.join([f'{obs.wav} μm image (level {(obs.level/10):g})',
+    annotation = '\n'.join([f'{obs.wav} μm image (level {(obs.level / 10):g})',
                             f'ObsID: {obs.obsid}',
                             name if name != '' else obs.name])
 
@@ -710,20 +709,19 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
                       stacklevel = 2)
 
     #before starting to save output, remove any old files in the output folder
-    #if os.path.exists(savepath):
-    #    shutil.rmtree(savepath)
+    if os.path.exists(savepath):
+        shutil.rmtree(savepath)
 
-    #os.makedirs(savepath)
+    os.makedirs(savepath)
 
-    #upper limits on the model parameters;
-    #note that the radii are restricted to the half-diagonal length of the image
-    #this is a quick way of ensuring that we don't
-    #end up with arbitrarily large discs that lie completely outside the image cutout (which is
-    #a problem because such discs can have arbitrarily large fluxes)
+    #upper limits on the model parameters
+    #note that the radii are restricted to the half-diagonal length of the image; this is a quick way
+    #of ensuring that we don't end up with arbitrarily large discs that lie completely outside
+    #the image cutout
     param_limits = ParamLimits(
                                fmax = 200000,                                               #mJy
                                shiftmax = 5,                                                #PACS pixels
-                               rmax = min(obs.image.shape) * obs.aupp / np.sqrt(2), #au
+                               rmax = min(obs.image.shape) * obs.aupp / np.sqrt(2),         #au
                                imax = 90 if model_type == ModelType.Particle else 88        #deg
                               )
 
@@ -873,6 +871,14 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     median = np.median(samples, axis = 0)
     lower_uncertainty = median - np.percentile(samples, 16, axis = 0)
     upper_uncertainty = np.percentile(samples, 84, axis = 0) - median
+
+
+
+    #x = range(1000)
+    #y = [log_probability(max_likelihood, psf, alpha, include_unres, stellarflux,
+    #                     obs, param_limits, model_type, npart) for i in x]
+    #plt.plot(x,y)
+    #plt.show()
 
 
     #now make a four-panel image: [data, psf subtraction, high-res max-likelihood model, residuals]
