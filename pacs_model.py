@@ -27,8 +27,6 @@ import os
 import shutil
 
 
-#TODO: think about radius/flux limits...
-
 ### Classes ###
 
 #A simple data structure intended to hold upper limits on model parameters
@@ -279,12 +277,12 @@ class Model(Plottable):
         dypr = -dx * np.sin(np.deg2rad(self.theta)) + dy * np.cos(np.deg2rad(self.theta))
 
         #distances from the star to each model pixel
-        d = np.sqrt(dypr**2 + (dxpr / np.cos(np.deg2rad(self.inc)))**2)
+        r = np.sqrt(dypr**2 + (dxpr / np.cos(np.deg2rad(self.inc)))**2)
 
-        #set disc flux based on d^(-alpha) profile
-        in_disc = (d > self.r1) & (d < self.r2)
-        flux = np.zeros(d.shape)
-        flux[in_disc] = d[in_disc] ** (-self.alpha)
+        #set disc flux based on r^-alpha profile
+        in_disc = (r > self.r1) & (r < self.r2)
+        flux = np.zeros(r.shape)
+        flux[in_disc] = r[in_disc] ** -self.alpha
 
         #ensure we don't divide by zero (if there's no flux, we don't need to normalize anyway)
         #NOTE: normalization for the geometric model works differently to the particle model, in that
@@ -299,23 +297,29 @@ class Model(Plottable):
 
     def _particle_model(self):
 
-        #uniformly distributed distances
-        d = np.random.uniform(low = self.r1, high = self.r2, size = self.npart)
+        #first get a variable uniformly distributed from 0-1
+        u = np.random.uniform(size = self.npart)
+
+        #transform from uniform distribution to linear distribution, so that the surface
+        #number density of particles is constant across the disc (since it's n(r)/2*pi*r*dr)
+        number_index = 1
+        r = ((self.r2 ** (1 + number_index) - self.r1 ** (1 + number_index)) * u
+             + self.r1 ** (1 + number_index)) ** (1 / (1 + number_index))
 
         #give the particles random azimuthal angles
         phi = np.random.uniform(0, 2 * np.pi, size = self.npart)
 
         #coordinates in the frame aligned with the major & minor axes
-        dypr = d * np.cos(phi)
-        dxpr = d * np.sin(phi) * np.cos(np.deg2rad(self.inc))
+        dypr = r * np.cos(phi)
+        dxpr = r * np.sin(phi) * np.cos(np.deg2rad(self.inc))
 
         #coordinates in the frame aligned with the image axes
         dx = dxpr * np.cos(np.deg2rad(self.theta)) - dypr * np.sin(np.deg2rad(self.theta)) - self.x0
         dy = dxpr * np.sin(np.deg2rad(self.theta)) + dypr * np.cos(np.deg2rad(self.theta)) + self.y0
 
-        index = 1 - self.alpha #gives a surface brightness profile of d**-alpha
+        #bin the particles and weight them to give a r^-alpha profile that sums to self.fres
         flux = np.histogram2d(dy, dx,
-                              weights = (self.fres / np.sum(d ** index)) * d ** index, #normalize disc to fres
+                              weights = (self.fres / np.sum(r ** -self.alpha)) * r ** -self.alpha,
                               bins = [np.linspace(-self.shape[i] * self.aupp / 2,
                                                   self.shape[i] * self.aupp / 2,
                                                   self.shape[i] * self.hires_scale + 1) for i in range(2)])[0]
@@ -458,7 +462,7 @@ class Observation(Plottable):
 
         #rebin to a higher resolution if requested
         self.hires_scale = hires_scale
-        if self.hires_scale > 1:
+        if self.hires_scale >= 1:
             self.image_hires = congrid(self.image,
                                       [i * self.hires_scale for i in self.image.shape],
                                       minusone = True)
@@ -466,8 +470,8 @@ class Observation(Plottable):
             #ensure that flux is conserved
             self.image_hires *= np.sum(self.image) / np.sum(self.image_hires)
 
-        elif hires_scale < 1:
-            raise Exception(f"hires_scale should be an integer > 1")
+        else:
+            raise Exception(f"hires_scale should be an integer >= 1")
 
 
     def best_psf_subtraction(self, psf, param_limits):
@@ -502,7 +506,7 @@ class Observation(Plottable):
 
         #this function guarantees that the desired pixel will be exactly at the centre
         #as long as boxscale < centre[i], which is useful for making centred plots
-        
+
         self.image = self.image[int(centre[0] - boxscale) : int(centre[0] + boxscale + 1),
                                 int(centre[1] - boxscale) : int(centre[1] + boxscale + 1)]
 
@@ -602,16 +606,6 @@ def chi2(params, psf, alpha, include_unres, stellarflux, obs, param_limits, mode
             return np.inf
 
     model.make_images(psf)
-
-    #reject models that are supposed to have nonzero unresolved flux but don't (i.e. outside image cutout)
-    #if model.fres > 0 and np.sum(model.image_hires) == 0:
-    #    return np.inf
-
-    #intended_fres = model.fres / obs.flux_factor
-    #actual_fres = np.sum(model.image_hires)
-
-    #if abs(intended_fres - actual_fres)/intended_fres > 0.01:
-    #    return np.inf
 
     return np.sum(((obs.image - model.image) / obs.uncert) ** 2)
 
@@ -715,9 +709,11 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     os.makedirs(savepath)
 
     #upper limits on the model parameters
-    #note that the radii are restricted to the half-diagonal length of the image; this is a quick way
-    #of ensuring that we don't end up with arbitrarily large discs that lie completely outside
+    #NOTE: the radii are restricted to the half-diagonal length of the image - this is a quick
+    #way of ensuring that we don't end up with arbitrarily large discs that lie completely outside
     #the image cutout
+    #NOTE: all limits are used for the initial differential evolution fit (since this method requires
+    #parameter ranges to be specified); for the MCMC fit, fmax is NOT imposed, but the other limits are
     param_limits = ParamLimits(
                                fmax = 200000,                                               #mJy
                                shiftmax = 5,                                                #PACS pixels
@@ -730,7 +726,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     psfsub = obs.best_psf_subtraction(psf_imagesize, param_limits)
 
     if test:
-        sig, is_noise = psfsub.consistent_gaussian(15)
+        sig, is_noise = psfsub.consistent_gaussian(radius = 15)
 
         if is_noise:
             print(f"The PSF subtraction is consistent with Gaussian noise at the {sig:.0f}% level."
@@ -924,7 +920,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
 
     #check whether the model appears to be a good fit
-    sig, is_noise = residual.consistent_gaussian(15)
+    sig, is_noise = residual.consistent_gaussian(radius = 15)
 
     if is_noise:
         print(f"The residuals are consistent with Gaussian noise at the {sig:.0f}% significance level."
