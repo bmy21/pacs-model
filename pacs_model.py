@@ -46,7 +46,7 @@ class Plottable:
 
     def __sub__(self, other):
         """Return a basic Plottable object whose image is the difference of self and other.
-        Note the resulting object will not have an associated high-resolution image."""
+        Note that the resulting object will not have an associated high-resolution image."""
 
         if not np.isclose(self.pfov, other.pfov):
             raise Exception("Tried to subtract two Plottables with different pixel sizes "
@@ -75,7 +75,7 @@ class Plottable:
         return self.pfov * np.sqrt(dx**2 + dy**2)
 
 
-    def consistent_gaussian(self, radius = None):
+    def consistent_gaussian(self, radius = np.nan):
         """Establish whether self.image appears consistent with Gaussian noise.
 
         If a radius is provided, return True if either the whole image, or the region within
@@ -84,7 +84,7 @@ class Plottable:
         the result, but reducing the number of pixels also increases the significance of any
         bright pixels, so it's useful to check both regions."""
 
-        if radius is not None:
+        if not np.isnan(radius):
             sky_separation = self._projected_sep_array([i/2 for i in self.image.shape])
             data = self.image[sky_separation < radius]
 
@@ -100,10 +100,10 @@ class Plottable:
         crit = result.critical_values[2]
 
         #return the significance level and whether the data are consistent with a Gaussian at that level
-        if radius is None:
+        if np.isnan(radius):
             return sig, (result.statistic < crit)
         else:
-            return sig, (result.statistic < crit or self.consistent_gaussian(None)[1])
+            return sig, (result.statistic < crit or self.consistent_gaussian(np.nan)[1])
 
 
     def _find_brightest(self, sep_threshold, centre):
@@ -128,7 +128,7 @@ class Plottable:
 
 
     def _get_limits(self):
-        """Calculate the appropriate limits in arcsec for a plot of the object's image."""
+        """Calculate the appropriate axis limits in arcsec for a plot of the object's image."""
 
         return [self.image.shape[1] * self.pfov / 2, -self.image.shape[1] * self.pfov / 2,
                 -self.image.shape[0] * self.pfov / 2, self.image.shape[0] * self.pfov / 2]
@@ -198,7 +198,7 @@ class Plottable:
 
         #add a colorbar
         if not log: cblabel = '$\mathregular{Intensity\ /\ (mJy\ arcsec^{-2})}$'
-        else: cblabel = '$\mathregular{log\ [\ Intensity\ /\ (mJy\ arcsec^{-2})\ ]}$'
+        else:       cblabel = '$\mathregular{log\ [\ Intensity\ /\ (mJy\ arcsec^{-2})\ ]}$'
 
         divider = make_axes_locatable(ax)
         cax = divider.append_axes('bottom', size = '5%', pad = 0.6)
@@ -239,6 +239,7 @@ class ModelType(Enum):
 
 
 class Model(Plottable):
+    """Class representing a disc model, with capability to make synthetic images of the modelled disc."""
 
     def __init__(self, params, shape, pfov, aupp, hires_scale, alpha, include_unres,
                  stellarflux, flux_factor, model_type = ModelType.Geometric, npart = 100000):
@@ -314,7 +315,7 @@ class Model(Plottable):
 
         index = 1 - self.alpha #gives a surface brightness profile of d**-alpha
         flux = np.histogram2d(dy, dx,
-                              weights = (self.fres / np.sum(d ** index)) * d ** index, #disc normalized to fres
+                              weights = (self.fres / np.sum(d ** index)) * d ** index, #normalize disc to fres
                               bins = [np.linspace(-self.shape[i] * self.aupp / 2,
                                                   self.shape[i] * self.aupp / 2,
                                                   self.shape[i] * self.hires_scale + 1) for i in range(2)])[0]
@@ -348,7 +349,7 @@ class Model(Plottable):
         Parameters
         ----------
         psf : Plottable
-            Image to use as a PSF. Must have an image_hires at the same scale as self.image_hires.
+            PSF used to make synthetic observation. Must have an image_hires at the same scale as self.image_hires.
         """
 
         if self.hires_scale != psf.hires_scale:
@@ -363,7 +364,7 @@ class Model(Plottable):
 
 
 class Observation(Plottable):
-    """Class representing a PACS observation. Stores the image and some associated metadata."""
+    """Class representing a PACS observation. Stores the image and important associated metadata."""
 
     def __init__(self, filename, search_radius = 5, target_ra = np.nan, target_dec = np.nan, dist = np.nan,
                  boxsize = 13, hires_scale = 1, rotate_to = np.nan, normalize = False):
@@ -574,43 +575,10 @@ class Observation(Plottable):
             return 1.0 / (1.0 - r / 3.0)
 
 
-### Functions used during initial setup ###
-
-def choose_psf(level, wav):
-    """Returns a path to one of four default PSFs based on processing level and wavelength."""
-
-    #TODO: put this in a class/struct?
-
-    if wav == 70:
-        if level == 20:
-            name_psf = ('psf/gamma_dra_70/1342217404/level2/HPPPMAPB/'
-                        'hpacs1342217404_20hpppmapb_00_1469423089198.fits.gz')
-        elif level == 25:
-            name_psf = ('psf/gamma_dra_70/1342217404/level2_5/HPPHPFMAPB/'
-                        'hpacs_25HPPHPFMAPB_blue_1757_p5129_00_v1.0_1470980845846.fits.gz')
-        else:
-            raise Exception(f'No level {level} PSF is provided by default')
-
-    elif wav == 100:
-        if level == 20:
-            name_psf = ('psf/gamma_dra_100/1342216069/level2/HPPPMAPB/'
-                        'hpacs1342216069_20hpppmapb_00_1469417766626.fits.gz')
-        elif level == 25:
-            name_psf = ('psf/gamma_dra_100/1342216069/level2_5/HPPHPFMAPB/'
-                        'hpacs_25HPPHPFMAPB_green_1757_p5129_00_v1.0_1470967312171.fits.gz')
-        else:
-            raise Exception(f'No level {level} PSF is provided by default.')
-
-    else:
-        raise Exception(f'No {wav} μm PSF is provided by default')
-
-    return name_psf
-
-
 ### Functions used for disc model fitting ###
 
 def chi2(params, psf, alpha, include_unres, stellarflux, obs, param_limits, model_type, npart):
-    """Subtract model from image and calculate the chi-squared value, with uncertainties given by uncert."""
+    """Subtract model from observations and calculate the chi-squared goodness of fit value."""
 
     model = Model(params, obs.image.shape, obs.pfov, obs.aupp, psf.hires_scale,
                   alpha, include_unres, stellarflux, obs.flux_factor, model_type, npart)
@@ -663,15 +631,15 @@ def save_params(savepath, resolved, include_unres = None, max_likelihood = None,
     """Save the main results of the fit in a pickle file."""
 
     dict = {
-        "resolved": resolved,
-        "include_unres": include_unres,
-        "max_likelihood": max_likelihood,
-        "median": median,
-        "lower_uncertainty": lower_uncertainty,
-        "upper_uncertainty": upper_uncertainty,
-        "model_consistent": model_consistent,
-        "in_au": in_au,
-        "stellarflux": stellarflux
+        'resolved': resolved,
+        'include_unres': include_unres,
+        'max_likelihood': max_likelihood,
+        'median': median,
+        'lower_uncertainty': lower_uncertainty,
+        'upper_uncertainty': upper_uncertainty,
+        'model_consistent': model_consistent,
+        'in_au': in_au,
+        'stellarflux': stellarflux
     }
 
     with open(savepath + '/params.pickle', 'wb') as file:
@@ -705,7 +673,23 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     #if no PSF is provided, select one based on the processing level and wavelength
     if name_psf == '':
-        name_psf = choose_psf(obs.level, obs.wav)
+        if obs.wav != 70 and obs.wav != 100:
+            raise Exception(f'No {wav} μm PSF is provided by default')
+        if obs.level != 20 and obs.level != 25:
+            raise Exception(f'No level {level} PSF is provided by default')
+
+        default_psf = {
+            70: {20: 'psf/gamma_dra_70/1342217404/level2/HPPPMAPB/'
+                        'hpacs1342217404_20hpppmapb_00_1469423089198.fits.gz',
+                 25: 'psf/gamma_dra_70/1342217404/level2_5/HPPHPFMAPB/'
+                             'hpacs_25HPPHPFMAPB_blue_1757_p5129_00_v1.0_1470980845846.fits.gz'},
+            100: {20: 'psf/gamma_dra_100/1342216069/level2/HPPPMAPB/'
+                        'hpacs1342216069_20hpppmapb_00_1469417766626.fits.gz',
+                  25: 'psf/gamma_dra_100/1342216069/level2_5/HPPHPFMAPB/'
+                              'hpacs_25HPPHPFMAPB_green_1757_p5129_00_v1.0_1470967312171.fits.gz'}
+        }
+
+        name_psf = default_psf[obs.wav][obs.level]
 
     #a boxsize of 13 should be large enough to cover the PSF - no need for a larger PSF
     #even if the image is larger (this would slow down the convolution)
@@ -726,10 +710,10 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
                       stacklevel = 2)
 
     #before starting to save output, remove any old files in the output folder
-    if os.path.exists(savepath):
-        shutil.rmtree(savepath)
+    #if os.path.exists(savepath):
+    #    shutil.rmtree(savepath)
 
-    os.makedirs(savepath)
+    #os.makedirs(savepath)
 
     #upper limits on the model parameters;
     #note that the radii are restricted to the half-diagonal length of the image
