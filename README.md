@@ -12,15 +12,15 @@ Optionally, an image to use as a PSF may be supplied. By default, an image of th
 
 For fitting a large number of images, [pacs_model_batch.py](pacs_model_batch.py) should be helpful. This script reads in a CSV file ([obs_path_list.csv](input/obs_path_list.csv)) containing information about the images to fit and calls `run` for each system. An appropriately formatted CSV can be produced with the help of the notebook [get_obs_paths.ipynb](get_obs_paths.ipynb). However, [pacs_model_batch.py](pacs_model_batch.py) could be easily modified to read in a CSV with less information and make use of the default argument values.
 
-Finally, [gather_images.py](gather_images.py) can be used to sort the output of [pacs_model_batch.py](pacs_model_batch.py) into folders containing systems that the code classified as unresolved, succeeded and failed. I've found browsing the images in these folders to be a good way to get an overview of the results of a large batch run.
+Finally, [gather_images.py](gather_images.py) can be used to sort the output of [pacs_model_batch.py](pacs_model_batch.py) into folders containing systems that the code classified as unresolved, succeeded and failed. Browsing the images in these folders can be a good way to get an overview of the fitting results for a large batch of systems.
 
 
 ## Output
 
 For each system modelled, [pacs_model.py](pacs_model.py) will save:
 
-- **chains.pdf**: a plot showing the evolution of the MCMC walkers over time;
-- **corner.pdf**: a plot showing the 2D projections of the posterior model parameter distributions;
+- **chains.pdf**, **chains.png**: a plot showing the evolution of the MCMC walkers over time;
+- **corner.pdf**, **corner.png**: a plot showing the 2D projections of the posterior model parameter distributions;
 - **image_model.png**: a plot showing the image, PSF-subtracted image, best-fitting model and residuals;
 - **samples.pickle**: a pickle containing the MCMC samples (excluding burn-in) for future analysis;
 - **params.pickle**: a pickle containing the key results of the fit.
