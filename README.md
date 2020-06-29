@@ -51,4 +51,4 @@ Some features that it would be beneficial to add in the future:
 
 ## Credits
 
-The code here (other than [rebin.py](rebin.py), which is taken from the [SciPy Cookbook](https://scipy-cookbook.readthedocs.io/items/Rebinning.html)) was written by [Ben Yelverton](https://github.com/bmy21). If you've found it helpful for any work you're planning to publish, I'd appreciate an acknowledgement. I am grateful to [Grant Kennedy](https://github.com/drgmk) for advice on this work.
+The code here (other than [rebin.py](rebin.py), which is taken from the [SciPy Cookbook](https://scipy-cookbook.readthedocs.io/items/Rebinning.html)) was written by [Ben Yelverton](https://github.com/bmy21). Please let me know if you find any issues with the code. If you've found it helpful for any work you're planning to publish, I'd appreciate an acknowledgement. I am grateful to [Grant Kennedy](https://github.com/drgmk) for advice on this work.
