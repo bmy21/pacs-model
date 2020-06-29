@@ -9,7 +9,7 @@ def congrid(a, newdims, method='linear', centre=False, minusone=False):
     '''Arbitrary resampling of source array to new dimension sizes.
     Currently only supports maintaining the same number of dimensions.
     To use 1-D arrays, first promote them to shape (x,1).
-    
+
     Uses the same parameters and creates the same co-ordinate lookup points
     as IDL''s congrid routine, which apparently originally came from a VAX/VMS
     routine of the same name.
@@ -68,7 +68,7 @@ def congrid(a, newdims, method='linear', centre=False, minusone=False):
         mint = scipy.interpolate.interp1d( olddims[-1], a, kind=method )
         newa = mint( dimlist[-1] )
 
-#        trorder = [ndims - 1] + range( ndims - 1 )
+        #trorder = [ndims - 1] + range( ndims - 1 )
         trorder = [ndims - 1] + list(range( ndims - 1 ))
         for i in range( ndims - 2, -1, -1 ):
             newa = newa.transpose( trorder )

@@ -1,7 +1,7 @@
 import matplotlib
 #the line below needs to be here so that matplotlib can save figures
 #without an X server running - e.g. if using ssh/tmux
-#matplotlib.use('Agg')
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from matplotlib.ticker import LogLocator, MaxNLocator, FuncFormatter
@@ -48,7 +48,7 @@ class Plottable:
 
         if not np.isclose(self.pfov, other.pfov):
             raise Exception("Tried to subtract two Plottables with different pixel sizes "
-                            f"({self.pfov} / {other.pfov})")
+                            f"({self.pfov:.2f} / {other.pfov:.2f})")
         else:
             return Plottable(self.pfov, self.image - other.image)
 
@@ -265,6 +265,7 @@ class Model(Plottable):
 
 
     def _geometric_model(self):
+        """Make a grid of model fluxes using the geometric method."""
 
         #note the use of +self.x0 but -self.y0, since RA increases to the left
         dx, dy = np.meshgrid(np.linspace(-self.aupp * self.shape[1] / 2, self.aupp * self.shape[1] / 2,
@@ -296,12 +297,14 @@ class Model(Plottable):
 
 
     def _particle_model(self):
+        """Make a grid of model fluxes using the particle-based method."""
 
         #first get a variable uniformly distributed from 0-1
         u = np.random.uniform(size = self.npart)
 
         #transform from uniform distribution to linear distribution, so that the surface
         #number density of particles is constant across the disc (since it's n(r)/2*pi*r*dr)
+        #see e.g. https://mathworld.wolfram.com/RandomNumber.html
         number_index = 1
         r = ((self.r2 ** (1 + number_index) - self.r1 ** (1 + number_index)) * u
              + self.r1 ** (1 + number_index)) ** (1 / (1 + number_index))
@@ -328,6 +331,8 @@ class Model(Plottable):
 
 
     def _make_hires(self):
+        """Store a high-res image without the central bright pixel in self.image_hires, and
+        return a grid of fluxes including that pixel, calculated using the appropriate method."""
 
         flux = self._flux_function()
 
@@ -357,7 +362,7 @@ class Model(Plottable):
         """
 
         if self.hires_scale != psf.hires_scale:
-            raise Exception(f"Model and PSF scales do not match ({self.hires_scale} / {psf.hires_scale})")
+            raise Exception(f"Model and PSF scales do not match ({self.hires_scale:.2f} / {psf.hires_scale:.2f})")
 
         #convolve high-resolution model with high-resolution PSF; note that the call to
         #_make_hires stores self.image_hires
@@ -393,7 +398,8 @@ class Observation(Plottable):
             if np.isnan(target_ra) or np.isnan(target_dec):
                 star_expected = [i / 2 for i in self.image.shape]
             else:
-                star_expected = np.flip(WCS(fitsfile['image'].header).wcs_world2pix([[target_ra, target_dec]], 0)[0])
+                wcs = WCS(fitsfile['image'].header)
+                star_expected = np.flip(wcs.wcs_world2pix([[target_ra, target_dec]], 0)[0])
 
             #extract coverage level, so that we can estimate the rms flux in a suitable region
             cov = fitsfile['coverage'].data
@@ -447,15 +453,22 @@ class Observation(Plottable):
         natural_pixsize = 3.2 #always the case for PACS 70/100 micron images
         self.uncert = self.rms * self._correlated_noise_factor(natural_pixsize)
 
-        #cut out a portion of the image with the brightest pixel at the centre
-        self._crop_image(brightest_pix, 2 * boxsize)
 
-        #rotate to a particular position angle if requested (necessary if using image as a PSF)
-        if not np.isnan(rotate_to): self.image = rotate(self.image, self.angle - rotate_to)
+        if np.isnan(rotate_to):
+            #simply crop down to the requested size
+            self._crop_image(brightest_pix,  boxsize)
 
-        #now cut down to the requested size; note that we again look for the brightest pixel
-        #and put this in the centre, since the rotation may have introduced a small offset
-        self._crop_image(self._find_brightest(2 * self.pfov, [i / 2 for i in self.image.shape]), boxsize)
+        else:
+            #cut out a portion of the image with the brightest pixel at the centre - this step is necessary
+            #because after the rotation the brightest_pix coordinates will no longer be correct
+            self._crop_image(brightest_pix, 2 * boxsize)
+
+            #rotate to the requested position angle (necessary if using image as a PSF)
+            self.image = rotate(self.image, self.angle - rotate_to)
+
+            #now cut down to the requested size; note that we again look for the brightest pixel
+            #and put this in the centre, since the rotation may have introduced a small offset
+            self._crop_image(self._find_brightest(2 * self.pfov, [i / 2 for i in self.image.shape]), boxsize)
 
         #normalize if requested
         if normalize: self.image /= np.sum(self.image)
@@ -479,7 +492,7 @@ class Observation(Plottable):
 
         if not np.isclose(self.pfov, psf.pfov):
             raise Exception("best_psf_subtraction received a PSF with the wrong pixel size "
-                            f"({self.pfov} / {psf.pfov})")
+                            f"({self.pfov:.2f} / {psf.pfov:.2f})")
 
         #note that shiftmax here is in PACS pixels
         limits = [(-param_limits.shiftmax, param_limits.shiftmax), #x shift
@@ -578,7 +591,7 @@ class Observation(Plottable):
             return 1.0 / (1.0 - r / 3.0)
 
 
-### Functions used for disc model fitting ###
+### Functions used for model fitting ###
 
 def chi2(params, psf, alpha, include_unres, stellarflux, obs, param_limits, model_type, npart):
     """Subtract model from observations and calculate the chi-squared goodness of fit value."""
@@ -694,7 +707,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     #abort execution if the PSF pixel scale doesn't match that of the image
     if not np.isclose(psf.pfov, obs.pfov):
-        raise Exception(f"PSF and image pixel sizes do not match ({psf.pfov} / {obs.pfov})")
+        raise Exception(f"PSF and image pixel sizes do not match ({psf.pfov:.2f} / {obs.pfov:.2f})")
 
     #issue a warning if the image and PSF are at different wavelengths
     if psf.wav != obs.wav:
@@ -746,7 +759,6 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
             plt.tight_layout()
             fig.savefig(savepath + '/image_model.png', dpi = 150)
-            #plt.show()
             plt.close(fig)
 
             #save a pickle simply indicating that no disc was resolved
@@ -848,6 +860,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     plt.tight_layout(h_pad = 0.5)
     fig.savefig(savepath + '/chains.pdf')
+    fig.savefig(savepath + '/chains.png', dpi = 150)
     plt.close(fig)
 
 
@@ -857,6 +870,7 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     fig = corner.corner(samples, quantiles = [0.16, 0.50, 0.84],
                         labels = pnames, show_titles = True, title_fmt = '.1f')
     fig.savefig(savepath + '/corner.pdf')
+    fig.savefig(savepath + '/corner.png', dpi = 150)
     plt.close(fig)
 
 
@@ -867,14 +881,6 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
     median = np.median(samples, axis = 0)
     lower_uncertainty = median - np.percentile(samples, 16, axis = 0)
     upper_uncertainty = np.percentile(samples, 84, axis = 0) - median
-
-
-
-    #x = range(1000)
-    #y = [log_probability(max_likelihood, psf, alpha, include_unres, stellarflux,
-    #                     obs, param_limits, model_type, npart) for i in x]
-    #plt.plot(x,y)
-    #plt.show()
 
 
     #now make a four-panel image: [data, psf subtraction, high-res max-likelihood model, residuals]
@@ -915,7 +921,6 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     plt.tight_layout()
     fig.savefig(savepath + '/image_model.png', dpi = 150)
-    plt.show()
     plt.close(fig)
 
 

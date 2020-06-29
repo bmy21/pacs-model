@@ -9,7 +9,7 @@ import os
 #failed: PSF subtraction and model residuals both inconsistent with noise
 #unresolved: PSF subtraction consistent with noise (no disc fit performed)
 
-rootdir = '../batch_results_1606'
+rootdir = '../batch_results/'
 
 
 #first make sure the required folders exist
