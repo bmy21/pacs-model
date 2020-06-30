@@ -28,7 +28,6 @@ from enum import Enum
 import warnings
 import tqdm
 import os
-import shutil
 
 
 
@@ -800,11 +799,9 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
                       f" ({psf.wav} / {obs.wav})",
                       stacklevel = 2)
 
-    #before starting to save output, remove any old files in the output folder
-    if os.path.exists(savepath):
-        shutil.rmtree(savepath)
-
-    os.makedirs(savepath)
+    #ensure that the output directory exists
+    if not os.path.exists(savepath):
+        os.makedirs(savepath)
 
     #upper limits on the model parameters
     #NOTE: the radii are restricted to the half-diagonal length of the image - this is a quick
