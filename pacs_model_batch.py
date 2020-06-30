@@ -26,7 +26,8 @@ for row in df_in.itertuples():
                            boxsize = 15, hires_scale = 3, include_unres = False,
                            initial_steps = 100, nwalkers = 200, nsteps = 700, burn = 500,
                            ra = row.ra_obs, dec = row.de_obs, test = True,
-                           model_type = pacs_model.ModelType.Particle, npart = 100000)
+                           model_type = pacs_model.ModelType.Particle, npart = 100000,
+                           query_simbad = False)
         else:
             print(f"Proceeding to next system (no significant excess: chi = {row.chi_star:.2f})")
 

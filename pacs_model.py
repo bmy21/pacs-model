@@ -14,6 +14,10 @@ from scipy.stats import anderson
 from astropy.io import fits
 from astropy.convolution import convolve_fft
 from astropy.wcs import WCS
+from astroquery.simbad import Simbad
+from astropy.time import Time
+from astropy.coordinates import SkyCoord
+import astropy.units as u
 import pickle
 import emcee
 import corner
@@ -25,6 +29,7 @@ import warnings
 import tqdm
 import os
 import shutil
+
 
 
 ### Classes ###
@@ -207,6 +212,20 @@ class Plottable:
         cb.ax.xaxis.set_minor_locator(plt.NullLocator())
         cb.ax.xaxis.set_major_locator(MaxNLocator(nbins = 5))
 
+        # show SIMBAD sources
+        source_coords = getattr(self, 'source_coords', [])
+        source_names = getattr(self, 'source_names', [])
+        for i, c in enumerate(source_coords):
+
+            #need a half-pixel offset to align correctly with the image
+            coord_x = limits[0] - self.pfov * (c[1] + 0.5)
+            coord_y = limits[2] + self.pfov * (c[0] + 0.5)
+
+            ax.plot([coord_x], [coord_y], c = 'tab:gray', marker = '+', markersize = 6)
+            ax.annotate(source_names[i], xy = (coord_x, coord_y),
+                        xytext = (2, 2), textcoords = 'offset points',
+                        color = 'tab:gray')
+
         #return the relevant AxesImage
         return im
 
@@ -376,7 +395,7 @@ class Observation(Plottable):
     """Class representing a PACS observation. Stores the image and important associated metadata."""
 
     def __init__(self, filename, search_radius = 5, target_ra = np.nan, target_dec = np.nan, dist = np.nan,
-                 boxsize = 13, hires_scale = 1, rotate_to = np.nan, normalize = False):
+                 boxsize = 13, hires_scale = 1, rotate_to = np.nan, normalize = False, query_simbad = False):
         """Load in an image, store some important parameters and perform initial image processing."""
 
         with fits.open(filename) as fitsfile:
@@ -418,10 +437,12 @@ class Observation(Plottable):
         #in_au can be stored in any saved output for future reference, and plots can be annotated with sep_unit,
         #which is intended to be embedded in a LaTeX string
         if np.isnan(dist):
+            distance_provided = False
             dist = 1
             self.sep_unit = r'^{\prime\prime}'
             self.in_au = False
         else:
+            distance_provided = True
             self.sep_unit = r'\mathrm{au}'
             self.in_au = True
 
@@ -455,7 +476,7 @@ class Observation(Plottable):
 
 
         if np.isnan(rotate_to):
-            #simply crop down to the requested size
+            #no rotation requested; simply crop down to the requested size
             self._crop_image(brightest_pix,  boxsize)
 
         else:
@@ -485,6 +506,69 @@ class Observation(Plottable):
 
         else:
             raise Exception(f"hires_scale should be an integer >= 1")
+
+
+        if query_simbad:
+            if not np.isnan(rotate_to):
+                warnings.warn(f"SIMBAD source overplotting for rotated images is"
+                              " not supported. Skipping query.", stacklevel = 2)
+
+            else:
+                self.source_coords=[]
+                self.source_names=[]
+                Simbad.add_votable_fields('pm','plx')
+                with fits.open(filename) as fitsfile:
+                    qra = fitsfile['PRIMARY'].header['RA'] if np.isnan(target_ra) else target_ra
+                    qdec = fitsfile['PRIMARY'].header['DEC'] if np.isnan(target_dec) else target_dec
+                    coord = SkyCoord(ra = qra, dec = qdec, unit = (u.degree, u.degree), frame = 'icrs')
+
+                    #find sources within a circle whose radius is half the cutout side length
+                    r = Simbad.query_region(coordinates = coord, radius = boxsize * self.pfov * u.arcsec)
+
+                    if len(r) > 0:
+                        wcs = WCS(fitsfile['image'].header)
+                        for i in range(len(r)):
+                            #assume a distance of 50pc if none is available
+                            qdist = 50 * u.pc
+
+                            #preferentially use the supplied distance
+                            if distance_provided: qdist = dist * u.pc
+
+                            #otherwise, try to get one from SIMBAD
+                            elif r[i]['PLX_VALUE'] > 0: distance = (1e3 / r[i]['PLX_VALUE']) * u.pc
+
+                            if np.isfinite(r[i]['PMRA']) and np.isfinite(r[i]['PMDEC']):
+                                #J2000 sky coordinates
+                                s2000 = SkyCoord(r[i]['RA'].replace(' ',':')+' '+r[i]['DEC'].replace(' ',':'),
+                                                 unit = (u.hour, u.degree), distance = qdist,
+                                                 pm_ra_cosdec = r[i]['PMRA'] * u.mas / u.yr,
+                                                 pm_dec = r[i]['PMDEC'] * u.mas / u.yr,
+                                                 obstime = Time(2451545.0,format='jd'))
+
+                                #apply proper motion correction to observation date
+                                s = s2000.apply_space_motion(new_obstime = Time(fitsfile['PRIMARY'].header['DATE-OBS']))
+
+                            else:
+                                s = SkyCoord(r[i]['RA'].replace(' ',':')+' '+r[i]['DEC'].replace(' ',':'),
+                                             unit = (u.hour, u.degree))
+
+                            #find the pixel corresponding to source i
+                            coord = np.flip(wcs.wcs_world2pix([[s.ra.deg, s.dec.deg]], 0)[0])
+
+                            #translate into image cutout coordinates
+                            coord -= np.array(brightest_pix) - boxsize
+
+                            #store the coordinates and source name as an attribute
+                            append = True
+
+                            #don't append duplicate coordinates (i.e. planets)
+                            for c in self.source_coords:
+                                if np.isclose(c, coord).all():
+                                    append = False
+
+                            if append:
+                                self.source_coords.append(coord)
+                                self.source_names.append(r[i]['MAIN_ID'].decode())
 
 
     def best_psf_subtraction(self, psf, param_limits):
@@ -657,7 +741,8 @@ def save_params(savepath, resolved, include_unres = None, max_likelihood = None,
 def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', dist = np.nan,
         stellarflux = 0, boxsize = 13, hires_scale = 3, alpha = 1.5, include_unres = False,
         initial_steps = 100, nwalkers = 200, nsteps = 800, burn = 600, ra = np.nan,
-        dec = np.nan, test = False, model_type = ModelType.Particle, npart = 100000):
+        dec = np.nan, test = False, model_type = ModelType.Particle, npart = 100000,
+        query_simbad = False):
     """Fit one image and save the output."""
 
     #if given no stellar flux, force an unresolved component to be added
@@ -666,7 +751,8 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
         warnings.warn("No stellar flux was supplied. Forcing the model to include an unresolved flux.",
                       stacklevel = 2)
 
-    obs = Observation(name_image, target_ra = ra, target_dec = dec, dist = dist, boxsize = boxsize)
+    obs = Observation(name_image, target_ra = ra, target_dec = dec, dist = dist, boxsize = boxsize,
+                      query_simbad = query_simbad)
 
     #put the star name, distance, obsid/level & wavelength together into an annotation for the image
     annotation = '\n'.join([f'{obs.wav} μm image (level {(obs.level / 10):g})',
@@ -675,7 +761,6 @@ def run(name_image, name_psf = '', savepath = 'pacs_model/output/', name = '', d
 
     if not np.isnan(dist):
         annotation += f' (at {dist:.1f} pc)'
-
 
     #if no PSF is provided, select one based on the processing level and wavelength
     if name_psf == '':
@@ -984,9 +1069,8 @@ def parse_args():
                         help = 'number of particles if using model p (default 100000)', default = 100000)
     parser.add_argument('--unres', dest = 'unres', action = 'store_true',
                         help = 'include a component of unresolved flux in the model')
-    parser.add_argument('--test', dest = 'testres', action = 'store_true',
-                        help = 'test whether the system appears consistent with a point source'
-                               ' and skip disc fit if so')
+    parser.add_argument('--simbad', dest = 'query_simbad', action = 'store_true',
+                        help = 'query simbad for sources near target and plot them')
 
     args = parser.parse_args()
 
@@ -1028,11 +1112,14 @@ def parse_args():
     #where to save the results
     savepath = args.output
 
-    #should we use PSF subtraction to test for a resolved disc?
+    #use PSF subtraction to test for a resolved disc?
     test = args.testres
 
+    #overplot SIMBAD sources?
+    query_simbad = args.query_simbad
+
     return (name_image, name_psf, savepath, name, dist, stellarflux, boxsize, hires_scale, alpha, include_unres,
-            initial_steps, nwalkers, nsteps, burn, ra, dec, test, model_type, npart)
+            initial_steps, nwalkers, nsteps, burn, ra, dec, test, model_type, npart, query_simbad)
 
 
 #allow command-line execution
