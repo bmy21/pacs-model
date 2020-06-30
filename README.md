@@ -47,7 +47,6 @@ Some features that it would be beneficial to add in the future:
 
 - An option to include more than one point source in the model, to account for any nearby companions or background objects. Since the code currently doesn't do this, what generally happens in multiple-source images is that the best-fitting model has a disc whose ansae pass through at least one of the sources. These 'discs' can sometimes fit the data well, but are unlikely to be the true explanation of what's going on!
 
-- An option to overplot the locations and names of any objects in the field of view that are listed in SIMBAD. It would be useful to have an immediate way to see e.g. whether a binary companion is nearby, as a medium-separation binary where the sources overlap could superficially appear to be a star with a resolved disc.
 
 ## Credits
 
