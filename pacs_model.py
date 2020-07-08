@@ -1064,6 +1064,8 @@ def parse_args():
                         help = 'model type: g for geometric, p for particle (default p)', default = 'p')
     parser.add_argument('--npart', dest = 'npart', metavar = 'npart', type = int,
                         help = 'number of particles if using model p (default 100000)', default = 100000)
+    parser.add_argument('--test', dest = 'testres', action = 'store_true',
+                        help = 'only fit if disc appears to be resolved')
     parser.add_argument('--unres', dest = 'unres', action = 'store_true',
                         help = 'include a component of unresolved flux in the model')
     parser.add_argument('--simbad', dest = 'query_simbad', action = 'store_true',
